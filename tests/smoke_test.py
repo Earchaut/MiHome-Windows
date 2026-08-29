@@ -32,11 +32,12 @@ def main() -> int:
             except (TypeError, ValueError):
                 failures.append(f"{label}: {name} 签名不可解析")
 
-    # 登录与列表接口（含扫码登录的两步组合）
+    # 登录与列表接口（含扫码登录的两步组合与场景列表/执行）
     check(MijiaApiClass, "available", "mijiaAPI")
     for name in (
         "_get_qr_login_data", "_complete_qr_login",
         "get_homes_list", "get_devices_list", "get_shared_devices_list",
+        "get_scenes_list", "run_scene",
     ):
         check(MijiaApiClass, name, "mijiaAPI")
 

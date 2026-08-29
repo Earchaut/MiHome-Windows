@@ -17,7 +17,7 @@ import sys
 import shiboken6
 from PySide6.QtCore import QPropertyAnimation, QPoint, QSize, Qt, QTimer
 from PySide6.QtWidgets import QGraphicsOpacityEffect
-from PySide6.QtGui import QAction, QIcon, QPixmap
+from PySide6.QtGui import QAction, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -38,10 +38,11 @@ import qtawesome as qta
 
 from app.core import cache as device_cache
 from app.core.jobs import JobExecutor
-from app.core.models import DeviceInfo, is_speaker
+from app.core.models import DeviceInfo, SceneInfo, is_speaker
 from app.core.service import MijiaService
 from app.ui.device_card import DeviceCard
 from app.ui.device_dialog import DeviceDetailDialog
+from app.ui.scene_card import SceneCard
 from app.ui.si_theme import SiColors, themed_tab_button
 from app.ui.toast import Toast
 from app.ui.tray import TrayController, TrayManagerDialog
@@ -52,6 +53,8 @@ logger = logging.getLogger(__name__)
 
 _ALL_ROOMS = "全屋"
 _ALL_HOMES = "全部"
+# 场景选项卡：位于「全屋」左侧的特殊房间值，选中后网格切换为场景视图
+_SCENE_TAB = "场景"
 
 # 外部（APP/语音）改状态后卡片靠轮询跟随；批量读一次请求
 _POLL_INTERVAL_MS = 5_000
@@ -115,6 +118,10 @@ class MainWindow(QMainWindow):
         self._metrics: dict[str, str | None] = {}
         # 刷新防重入：请求在途时忽略再次点击
         self._loading_devices = False
+        # 场景列表（None=尚未加载）；随每次选中场景 tab 后台刷新
+        self._scenes: list[SceneInfo] | None = None
+        self._scene_cards: dict[str, SceneCard] = {}
+        self._loading_scenes = False
         # 轮询防重入：上一轮批量读取未返回时跳过本轮定时触发
         self._poll_in_flight = False
         # 网格重排防抖：拖动窗口会触发密集 resizeEvent，全部重建
@@ -126,6 +133,9 @@ class MainWindow(QMainWindow):
         # 隐藏无可控制功能的设备（设置开关，默认关）
         from app.core.settings_store import get_hide_no_func_devices
         self._hide_no_func = get_hide_no_func_devices()
+        # 是否显示「场景」选项卡（设置开关，默认开）
+        from app.core.settings_store import get_show_scene_tab
+        self._show_scene_tab = get_show_scene_tab()
         # 产品页名称回退的异步查询防重入
         self._localize_busy = False
         self._resize_timer = QTimer(self)
@@ -689,6 +699,17 @@ class MainWindow(QMainWindow):
             self._rebuild_grid()
             self._update_count_label()
             self._update_tray_devices()
+        # “显示场景选项卡”开关可能变化：重载选项卡；
+        # 关闭时若正停留在场景视图，重置回全屋，避免选项卡消失后无法切回
+        from app.core.settings_store import get_show_scene_tab
+        new_show = get_show_scene_tab()
+        if new_show != self._show_scene_tab:
+            self._show_scene_tab = new_show
+            if not new_show and self._current_room == _SCENE_TAB:
+                self._current_room = _ALL_ROOMS
+            self._rebuild_tabs()
+            self._rebuild_grid()
+            self._update_count_label()
         # 同步小爱悬浮按钮显隐
         self._update_voice_fab()
 
@@ -717,6 +738,12 @@ class MainWindow(QMainWindow):
         )
 
     def _update_count_label(self) -> None:
+        if self._current_room == _SCENE_TAB:
+            count = len(self._scenes or [])
+            self._count_label.setText(
+                f'<span style="color:{SiColors.TEXT_MUTED}">共 {count} 个场景</span>'
+            )
+            return
         subset = self._visible_devices() if self._current_home == _ALL_HOMES else [
             d for d in self._visible_devices() if d.home_name == self._current_home
         ]
@@ -842,6 +869,9 @@ class MainWindow(QMainWindow):
             device_cache.save(self._all_devices, self._known_power, self._metrics)
 
     def _visible_devices(self) -> list[DeviceInfo]:
+        # 场景视图无设备：轮询/温湿度/计数等调用点自动空转跳过
+        if self._current_room == _SCENE_TAB:
+            return []
         return [
             d for d in self._all_devices
             if (self._current_home == _ALL_HOMES or d.home_name == self._current_home)
@@ -911,6 +941,38 @@ class MainWindow(QMainWindow):
         self._show_status("加载失败", 4000)
         QMessageBox.critical(self, "加载失败", str(error))
 
+    # ---------- 场景（手动控制） ----------
+
+    def _load_scenes(self) -> None:
+        """拉取当前家庭的场景列表；失败保留已有缓存。"""
+        if self._loading_scenes:
+            return
+        self._loading_scenes = True
+        if self._scenes is None:
+            self._show_status("正在加载场景…")
+        self._jobs.submit(
+            lambda: self._service.scene_list(
+                None if self._current_home == _ALL_HOMES else self._current_home),
+            on_success=self._on_scenes_loaded,
+            on_error=self._on_scenes_failed,
+        )
+
+    def _on_scenes_loaded(self, scenes: list[SceneInfo]) -> None:
+        self._loading_scenes = False
+        self._scenes = scenes
+        if self._current_room == _SCENE_TAB:
+            self._rebuild_grid()
+            self._update_count_label()
+
+    def _on_scenes_failed(self, error: Exception) -> None:
+        # 网络失败不打断界面：保留已有缓存，仅提示
+        self._loading_scenes = False
+        logger.warning("加载场景失败: %s", error)
+        if self._scenes is None:
+            self._show_status("场景加载失败", 4000)
+        else:
+            Toast.info(self, f"场景刷新失败：{error}", 4000)
+
     # ---------- 房间 tab ----------
 
     def _rebuild_tabs(self) -> None:
@@ -922,7 +984,7 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
         self._tab_buttons.clear()
 
-        rooms = [_ALL_ROOMS] + sorted({
+        rooms = ([_SCENE_TAB] if self._show_scene_tab else []) + [_ALL_ROOMS] + sorted({
             d.room_name for d in self._all_devices
             if (self._current_home == _ALL_HOMES or d.home_name == self._current_home)
             and d.room_name and d.room_name != "未知"
@@ -941,7 +1003,14 @@ class MainWindow(QMainWindow):
         self._sync_tab_style()
         self._rebuild_grid()
         self._animate_grid_in()
+        if room == _SCENE_TAB:
+            # 场景视图：有缓存先显示，后台刷新；无缓存时状态栏提示加载中
+            self._load_scenes()
+            self._update_count_label()
+            return
         self._refresh_power_states(force=False)
+        # 切回设备视图刷新计数：场景模式的「共 N 个场景」必须换回设备计数
+        self._update_count_label()
 
     def _sync_tab_style(self) -> None:
         for room, btn in self._tab_buttons.items():
@@ -958,9 +1027,11 @@ class MainWindow(QMainWindow):
             self._grid_columns = 0
             return
         self._grid_dirty = False
-        for card in self._cards.values():
-            card.deleteLater()
-        self._cards.clear()
+        # 场景视图：渲染场景卡片网格，与设备卡片网格互斥
+        if self._current_room == _SCENE_TAB:
+            self._rebuild_scene_grid()
+            return
+        self._clear_grid_cards()
         # takeAt 会移除条目，count 随之递减，循环必然终止
         while self._grid.count():
             if widget := self._grid.takeAt(0).widget():
@@ -992,6 +1063,52 @@ class MainWindow(QMainWindow):
             self._grid.setRowStretch(row, 0)
         self._grid.setRowStretch(rows, 1)
 
+    def _clear_grid_cards(self) -> None:
+        """销毁并清空两个视图的全部卡片引用。
+
+        切出场景视图时旧设备卡已从布局移除并排队销毁，若不清引用，
+        下次重建会对已销毁的 C++ 对象调用 deleteLater 抛 RuntimeError，
+        界面停留在旧视图无法切换。两个视图的卡片必须一并清理。
+        """
+        for card in self._cards.values():
+            card.deleteLater()
+        self._cards.clear()
+        for card in self._scene_cards.values():
+            card.deleteLater()
+        self._scene_cards.clear()
+
+    def _rebuild_scene_grid(self) -> None:
+        """场景视图网格：与设备卡片网格互斥，共用 _grid 布局。"""
+        self._clear_grid_cards()
+        while self._grid.count():
+            if widget := self._grid.takeAt(0).widget():
+                widget.deleteLater()
+
+        scenes = sorted(self._scenes or [], key=lambda s: s.name)
+        if not scenes:
+            # 空状态：居中提示，配色取次级文字色
+            hint = QLabel("暂无场景，可在米家 APP「智能」中添加")
+            hint.setAlignment(Qt.AlignCenter)
+            hint.setFont(QFont("Microsoft YaHei UI", 12))
+            hint.setStyleSheet(
+                f"color: {SiColors.TEXT_MUTED}; background: transparent;")
+            self._grid.addWidget(hint, 0, 0)
+            return
+
+        cols = self._columns_for_width(self._scroll.viewport().width())
+        self._grid_columns = cols
+        rows = (len(scenes) + cols - 1) // cols
+        for index, scene in enumerate(scenes):
+            card = SceneCard(scene)
+            card.executed.connect(self._on_scene_executed)
+            self._scene_cards[scene.scene_id] = card
+            self._grid.addWidget(card, index // cols, index % cols)
+        for col in range(cols):
+            self._grid.setColumnStretch(col, 1)
+        for row in range(rows):
+            self._grid.setRowStretch(row, 0)
+        self._grid.setRowStretch(rows, 1)
+
     def _columns_for_width(self, width: int) -> int:
         # 固定卡片宽度，列数随可视宽度动态计算，避免缩窄时卡片被裁切
         from app.ui.device_card import _CARD_FIXED_WIDTH
@@ -1019,6 +1136,12 @@ class MainWindow(QMainWindow):
         self._voice_fab.reposition()
 
     def _on_resize_settled(self) -> None:
+        if self._current_room == _SCENE_TAB:
+            # 场景网格同样需要随窗口宽度调整列数（卡片在 _scene_cards）
+            if self._scene_cards and self._columns_for_width(
+                    self._scroll.viewport().width()) != self._grid_columns:
+                self._rebuild_grid()
+            return
         if not self._cards:
             return
         if self._columns_for_width(self._scroll.viewport().width()) != self._grid_columns:
@@ -1055,6 +1178,33 @@ class MainWindow(QMainWindow):
             return
         card.set_busy(False)
         QMessageBox.warning(self, "操作失败", str(error))
+
+    # ---------- 场景执行 ----------
+
+    def _on_scene_executed(self, scene_id: str) -> None:
+        scene = next((s for s in (self._scenes or []) if s.scene_id == scene_id), None)
+        card = self._scene_cards.get(scene_id)
+        if scene is None or card is None:
+            return
+        card.set_busy(True)
+        self._jobs.submit(
+            lambda s=scene: self._service.run_scene(s),
+            on_success=lambda _, s=scene, c=card: self._on_scene_done(s, c),
+            on_error=lambda e, s=scene, c=card: self._on_scene_failed(s, c, e),
+        )
+
+    def _on_scene_done(self, scene: SceneInfo, card: SceneCard) -> None:
+        # 卡片可能在任务排队期间随网格重建被销毁，回调前先确认存活
+        if not shiboken6.isValid(card):
+            return
+        card.set_busy(False)
+        Toast.info(self, f"已执行场景「{scene.name}」", 2500)
+
+    def _on_scene_failed(self, scene: SceneInfo, card: SceneCard, error: Exception) -> None:
+        if not shiboken6.isValid(card):
+            return
+        card.set_busy(False)
+        Toast.info(self, f"执行场景「{scene.name}」失败：{error}", 4000)
 
     # ---------- 详情 ----------
 

@@ -152,7 +152,13 @@ if win._tray is not None:
 print("7. 托盘整窗重建 + 自动恢复显示 OK")
 
 win._all_devices = []  # 关闭路径不保存假设备
+# minimize_to_tray 默认 True：win.close() 只隐藏不清理，托盘图标
+# 残留会让进程在解释器退出阶段崩溃（退出码 127）；
+# 临时关掉走真正的关闭路径（hide 快捷窗 + 托盘图标 + 线程退出）
+from app.core import settings_store as _ss
+_ss.set_minimize_to_tray(False)
 win.close()
+_ss.set_minimize_to_tray(True)
 jobs.shutdown()
 settings_store.set_theme_mode("system")
 tray_store.save([])

@@ -15,6 +15,7 @@
 - 全局 QSS 由 build_qss() 生成，切换时整块替换。
 """
 
+import re
 from string import Template
 from typing import TYPE_CHECKING
 
@@ -425,8 +426,10 @@ def build_qss() -> str:
         THEME_CHECKED_HOVER=THEME_CHECKED_HOVER,
         DANGER=DANGER, WHITE=WHITE,
     )
-    # 缺键早失败：模板新增占位符而某套调色板漏配时给出可读报错
-    missing = set(_QSS_TEMPLATE.get_identifiers()) - set(values)
+    # 缺键早失败：模板新增占位符而某套调色板漏配时给出可读报错。
+    # 不用 Template.get_identifiers()——那是 Python 3.11 才有的方法，
+    # 项目支持 3.10，改用正则提取（模板只使用 $KEY 形式，无 ${} 与 $$）
+    missing = set(re.findall(r"\$(\w+)", _QSS_TEMPLATE.template)) - set(values)
     assert not missing, f"QSS 模板占位符缺少调色板键: {missing}"
     return _QSS_TEMPLATE.substitute(values)
 
