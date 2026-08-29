@@ -121,8 +121,6 @@ class SceneCard(SiRowCard):
 
     # ---------- 交互 ----------
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt 命名约定)
-        # 运行按钮自己消费点击事件，能走到这里的都是卡片空白区
-        if event.button() == Qt.LeftButton:
-            self.executed.emit(self.scene.scene_id)
-        super().mouseReleaseEvent(event)
+    # 刻意不重写 mouseReleaseEvent：只有右侧运行按钮触发 executed，
+    # 点击卡片空白处不执行任何操作（场景无详情页可开，误触成本高）
+    pass
