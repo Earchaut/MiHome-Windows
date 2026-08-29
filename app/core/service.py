@@ -13,12 +13,14 @@ _complete_qr_login 两步使用，是因为上游的 login() 会把二维码打�
 
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from mijiaAPI import (
     DeviceNotFoundError,
+    GetDeviceInfoError,
     get_device_info,
     mijiaAPI,
     mijiaDevice,
@@ -57,6 +59,9 @@ class MijiaService:
         self._device_index: dict[str, tuple[str, str]] = {}
         # model -> spec 内存缓存，轮询命中后不再读文件/打网络
         self._spec_cache: dict[str, dict | None] = {}
+        # spec 产品名缓存就绪后的产品页中文名缓存：
+        # model -> 中文名或 None（已确认无中文名，不再重查）
+        self._product_page_names: dict[str, str | None] = {}
 
     def _init_api(self) -> mijiaAPI:
         """构造上游客户端；认证文件损坏时隔离坏文件并降级为未登录。
@@ -255,6 +260,12 @@ class MijiaService:
                 # 必然在此失败；按上游 __init__ 的字段手工组装，后续
                 # get/set/run_action 与自有设备走完全相同的代码路径
                 self._device_cache[did] = self._build_shared_device(did)
+            except GetDeviceInfoError as exc:
+                # 无公开功能规格的设备（常见于仅蓝牙连接的产品）：
+                # 没有属性/动作可控制，给出用户可读的明确提示
+                raise ServiceError(
+                    "该设备无公开的功能规格（常见于仅蓝牙连接的产品），"
+                    "无法提供控制面板") from exc
             except Exception as exc:
                 raise _wrap_error(exc, "加载设备信息失败") from exc
         return self._device_cache[did]
@@ -268,6 +279,10 @@ class MijiaService:
             raise ServiceError(f"未找到设备 {did}")
         try:
             dev_info = get_device_info(model, cache_path=self._api.auth_data_path.parent)
+        except GetDeviceInfoError as exc:
+            raise ServiceError(
+                "该设备无公开的功能规格（常见于仅蓝牙连接的产品），"
+                "无法提供控制面板") from exc
         except Exception as exc:
             raise _wrap_error(exc, "加载设备信息失败") from exc
 
@@ -516,6 +531,83 @@ class MijiaService:
             raise _wrap_error(exc, "获取设备列表失败") from exc
         for d in all_devices:
             self._device_index[str(d["did"])] = (d.get("model", ""), d.get("name", ""))
+
+    def has_product_page_name(self, model: str) -> bool:
+        """该型号的产品页中文名是否已解析过（含“确认无”的情况）。"""
+        return model in self._product_page_names
+
+    def cached_product_page_names(self, models: list[str]) -> dict[str, str]:
+        """已解析且含中文的产品页名称（model -> name）。"""
+        result: dict[str, str] = {}
+        for model in models:
+            name = self._product_page_names.get(model)
+            if name and any("\u4e00" <= ch <= "\u9fff" for ch in name):
+                result[model] = name
+        return result
+
+    def product_page_name(self, model: str) -> str | None:
+        """抓取 miot-spec 产品页（/p/<model>）的中文商品名。
+
+        用于无公开 spec 的设备（如仅蓝牙类）：这类设备在 /spec/ 路径
+        404、specSummary.available=False，没有 spec 产品名可读，只有
+        产品页里有本地化商品名。结果（含 None=无中文名）写入缓存；
+        网络异常向上抛出由调用方决定重试。阻塞，须后台线程调用。
+        """
+        if model in self._product_page_names:
+            return self._product_page_names[model]
+        import requests
+
+        r = requests.get(f"https://home.miot-spec.com/p/{model}", timeout=30,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        name = None
+        if r.status_code == 200:
+            m = re.search(
+                r'<script data-page="app" type="application/json">(.*?)</script>',
+                r.text, re.S)
+            if m:
+                product = json.loads(m.group(1)).get("props", {}).get("product", {})
+                name = product.get("name") or None
+                if name is not None and not any("一" <= ch <= "鿿" for ch in name):
+                    name = None  # 产品名也非中文，无回退价值
+        self._product_page_names[model] = name
+        return name
+
+    def model_has_published_functions(self, model: str) -> bool | None:
+        """该型号是否发布过含属性的功能 spec。
+
+        True=有属性；False=无 spec 或 spec 无属性（无可控制功能）；
+        None=spec 尚未拉取（未知，调用方应视为有并等待轮询证实）。
+        """
+        if model not in self._spec_cache:
+            return None
+        spec = self._spec_cache[model]
+        return bool(spec and spec.get("properties"))
+
+    def localized_product_names(self, dids: list[str], names: dict[str, str]) -> dict[str, str]:
+        """did -> spec 中文产品名，用于替换未改名的英文默认设备名。
+
+        米家 APP 对未改名设备显示的是产品库本地化商品名，而第三方
+        设备列表接口的 name 字段只有英文默认名（国际版产品尤甚）。
+        spec 数据里带有中文产品名，本方法从**已缓存的 spec**（不发起
+        网络请求）读取：仅当云端名为纯 ASCII（未改名）且 spec 产品名
+        含中文时返回，否则该 did 不在结果中（保持云端原名）。
+        """
+        def has_cjk(s: str) -> bool:
+            return any("\u4e00" <= ch <= "\u9fff" for ch in s)
+
+        result: dict[str, str] = {}
+        for did in dids:
+            name = names.get(did, "")
+            if not name or has_cjk(name):
+                continue  # 已是中文（用户改名或国内默认名），不替换
+            model = self._device_index.get(did, ("", ""))[0]
+            spec = self._spec_cache.get(model)
+            if not spec:
+                continue
+            spec_name = str(spec.get("name") or "")
+            if spec_name and has_cjk(spec_name) and spec_name != name:
+                result[did] = spec_name
+        return result
 
 
 def format_metrics_text(temp, hum) -> str | None:

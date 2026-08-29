@@ -123,6 +123,11 @@ class MainWindow(QMainWindow):
         # 托盘常驻内存优化：窗口隐藏期间不构建卡片网格（数十个
         # 卡片控件 + 样式约占 20-30MB），标记脏位、首次显示时构建
         self._grid_dirty = False
+        # 隐藏无可控制功能的设备（设置开关，默认关）
+        from app.core.settings_store import get_hide_no_func_devices
+        self._hide_no_func = get_hide_no_func_devices()
+        # 产品页名称回退的异步查询防重入
+        self._localize_busy = False
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(60)
@@ -542,9 +547,80 @@ class MainWindow(QMainWindow):
         self._update_voice_fab()
         self._update_tray_devices()
 
+    def _maybe_localize_names(self) -> None:
+        """未改名英文设备用中文名替换显示名（两个来源按序兜底）。
+
+        ① spec 缓存里的产品名（多数设备有，零网络开销）；
+        ② miot-spec 产品页（/p/<model>）的中文商品名——无公开 spec
+          的设备（如仅蓝牙类）只有这里有，经后台线程抓取并缓存
+          （含“确认无中文名”的结果，不重复查询）。
+        改名设备与中文名设备不受影响；spec 产品名相同的设备
+        （同型号多台）追加 did 尾号以区分。
+        """
+        if not self._all_devices:
+            return
+        try:
+            names_now = {d.did: d.name for d in self._all_devices}
+            replacements = self._service.localized_product_names(
+                list(names_now), names_now)
+            ascii_devices = [d for d in self._all_devices if d.name.isascii() and d.model]
+            model_to_did = {d.model: d.did for d in ascii_devices}
+            models = sorted(model_to_did)
+            if models:
+                # 产品页名称按型号缓存，需映射回 did 再并入替换表
+                for model, product_name in self._service.cached_product_page_names(models).items():
+                    replacements[model_to_did[model]] = product_name
+        except Exception:
+            logger.exception("本地化设备名失败")
+            return
+        if replacements:
+            if self._apply_display_names(replacements):
+                return  # 已重建并同步托盘
+        # 仍有未解析的型号 → 提交一次后台查询（防重入）
+        pending = sorted({d.model for d in ascii_devices
+                          if not self._service.has_product_page_name(d.model)})
+        if pending and not self._localize_busy:
+            self._localize_busy = True
+            self._jobs.submit(
+                lambda: [self._service.product_page_name(m) for m in pending],
+                on_success=lambda _: self._on_product_names_fetched(),
+                on_error=lambda e: self._on_product_names_failed(e),
+            )
+
+    def _apply_display_names(self, replacements: dict[str, str]) -> bool:
+        """把替换名写入设备对象并重建展示；返回是否有实际变化。"""
+        changed = False
+        for d in self._all_devices:
+            new_name = replacements.get(d.did)
+            if new_name and new_name != d.name:
+                d.name = new_name
+                changed = True
+        if not changed:
+            return False
+        # 同型号多台替换后同名：追加 did 尾号区分（如 ·468）
+        by_name: dict[str, int] = {}
+        for d in self._all_devices:
+            by_name[d.name] = by_name.get(d.name, 0) + 1
+        for d in self._all_devices:
+            if by_name.get(d.name, 0) > 1 and d.did in replacements:
+                d.name = f"{d.name}·{d.did[-3:]}"
+        self._rebuild_grid()
+        self._update_count_label()
+        self._update_tray_devices()
+        return True
+
+    def _on_product_names_fetched(self) -> None:
+        self._localize_busy = False
+        self._maybe_localize_names()
+
+    def _on_product_names_failed(self, error: Exception) -> None:
+        # 网络失败不缓存结果：下一轮轮询会再次触发查询
+        self._localize_busy = False
+        logger.warning("产品页名称查询失败: %s", error)
+
     def _update_tray_devices(self) -> None:
         if self._tray is not None:
-            self._tray.set_devices(self._all_devices, self._known_power)
+            self._tray.set_devices(self._displayed_devices(), self._known_power)
 
     def _show_more_menu(self) -> None:
         """在更多按钮左下方弹出菜单，右边缘与按钮右边缘对齐。"""
@@ -604,6 +680,15 @@ class MainWindow(QMainWindow):
         from app.core.settings_store import get_minimize_to_tray
         if self._tray is not None:
             self._tray.set_tray_visible(get_minimize_to_tray())
+        # “隐藏无可控制功能的设备”开关可能变化：重载并刷新展示
+        from app.core.settings_store import get_hide_no_func_devices
+        new_hide = get_hide_no_func_devices()
+        if new_hide != self._hide_no_func:
+            self._hide_no_func = new_hide
+            self._rebuild_tabs()
+            self._rebuild_grid()
+            self._update_count_label()
+            self._update_tray_devices()
         # 同步小爱悬浮按钮显隐
         self._update_voice_fab()
 
@@ -632,10 +717,9 @@ class MainWindow(QMainWindow):
         )
 
     def _update_count_label(self) -> None:
-        if self._current_home == _ALL_HOMES:
-            subset = self._all_devices
-        else:
-            subset = [d for d in self._all_devices if d.home_name == self._current_home]
+        subset = self._visible_devices() if self._current_home == _ALL_HOMES else [
+            d for d in self._visible_devices() if d.home_name == self._current_home
+        ]
         total = len(subset)
         online = sum(1 for d in subset if d.online)
         self._count_label.setText(
@@ -685,6 +769,7 @@ class MainWindow(QMainWindow):
         self._poll_in_flight = False
         for did, state in states.items():
             self._apply_power_state(did, state)
+        self._maybe_localize_names()
         self._update_tray_devices()
 
     def _apply_power_state(self, did: str, state: bool | None) -> None:
@@ -731,6 +816,7 @@ class MainWindow(QMainWindow):
                 card.set_metrics(text)
         if dirty and self._all_devices:
             device_cache.save(self._all_devices, self._known_power, self._metrics)
+        self._maybe_localize_names()
         self._push_tray_metrics()
 
     def _push_tray_metrics(self) -> None:
@@ -760,7 +846,19 @@ class MainWindow(QMainWindow):
             d for d in self._all_devices
             if (self._current_home == _ALL_HOMES or d.home_name == self._current_home)
             and (self._current_room == _ALL_ROOMS or d.room_name == self._current_room)
+            and (not self._hide_no_func or self._device_has_functions(d))
         ]
+
+    def _device_has_functions(self, device: DeviceInfo) -> bool:
+        """None（spec 未拉取）视为有——等首轮轮询证实后再隐藏。"""
+        state = self._service.model_has_published_functions(device.model)
+        return state is not False
+
+    def _displayed_devices(self) -> list[DeviceInfo]:
+        """主页/托盘展示列表（含家庭/房间过滤与“隐藏无功能设备”）。"""
+        if not self._hide_no_func:
+            return self._all_devices
+        return [d for d in self._all_devices if self._device_has_functions(d)]
 
     def _show_home_menu(self) -> None:
         if not self._homes:

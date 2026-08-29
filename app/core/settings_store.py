@@ -21,6 +21,7 @@ _DEFAULTS: dict = {
     "start_minimized": False,
     "voice_fab_enabled": True,
     "theme": "system",  # system / light / dark
+    "hide_no_func_devices": False,
 }
 
 
@@ -68,6 +69,17 @@ def get_voice_fab_enabled() -> bool:
 def set_voice_fab_enabled(value: bool) -> None:
     raw = _read_raw()
     raw["voice_fab_enabled"] = bool(value)
+    _write_raw(raw)
+
+
+def get_hide_no_func_devices() -> bool:
+    """是否隐藏无可控制功能的设备（无 spec / spec 无属性），默认关闭。"""
+    return bool(_read_raw().get("hide_no_func_devices", False))
+
+
+def set_hide_no_func_devices(value: bool) -> None:
+    raw = _read_raw()
+    raw["hide_no_func_devices"] = bool(value)
     _write_raw(raw)
 
 

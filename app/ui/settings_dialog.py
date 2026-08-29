@@ -198,6 +198,27 @@ class SettingsDialog(OverlayDialog):
         fab_lay.addWidget(self._voice_fab_toggle)
         body.addWidget(self._fab_item)
 
+        # ── 隐藏无可控制功能的设备 ──
+        self._hide_item = QFrame()
+        hide_lay = QHBoxLayout(self._hide_item)
+        hide_lay.setContentsMargins(14, 12, 14, 12)
+        hide_lay.setSpacing(12)
+        hide_texts = QVBoxLayout()
+        hide_texts.setContentsMargins(0, 0, 0, 0)
+        hide_texts.setSpacing(4)
+        self._hide_label = QLabel("隐藏无可控制功能的设备")
+        hide_texts.addWidget(self._hide_label)
+        self._hide_desc = QLabel("无公开功能规格或规格无属性的设备（如部分蓝牙类产品）将不在主页显示")
+        self._hide_desc.setWordWrap(True)
+        self._hide_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        hide_texts.addWidget(self._hide_desc)
+        hide_lay.addLayout(hide_texts, stretch=1)
+        self._hide_toggle = themed_switch()
+        self._hide_toggle.setChecked(settings_store.get_hide_no_func_devices())
+        _sync_switch(self._hide_toggle)
+        hide_lay.addWidget(self._hide_toggle)
+        body.addWidget(self._hide_item)
+
 
         body.addStretch(1)
         lay.addLayout(body, stretch=1)
@@ -222,16 +243,19 @@ class SettingsDialog(OverlayDialog):
         """主题相关内联样式：构造与 retheme 共用。"""
         panel_card = f"QFrame {{ background: {SiColors.CARD}; border-radius: 10px; }}"
         for item in (self._tray_item, self._start_min_item,
-                     self._fab_item, self._theme_item, self._autostart_item):
+                     self._fab_item, self._theme_item, self._autostart_item,
+                     self._hide_item):
             item.setStyleSheet(panel_card)
         self._title_label.setStyleSheet(
             f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
         for label in (self._tray_label, self._start_min_label,
-                      self._fab_label, self._theme_label, self._autostart_label):
+                      self._fab_label, self._theme_label, self._autostart_label,
+                      self._hide_label):
             label.setStyleSheet(
                 f"color: {SiColors.TEXT_PRIMARY}; background: transparent; font-size: 10pt;")
         for desc in (self._tray_desc, self._start_min_desc,
-                     self._fab_desc, self._theme_desc, self._autostart_desc):
+                     self._fab_desc, self._theme_desc, self._autostart_desc,
+                     self._hide_desc):
             desc.setStyleSheet(
                 f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 7pt;")
         self._done_btn.setStyleSheet(
@@ -287,6 +311,7 @@ class SettingsDialog(OverlayDialog):
         # 落盘会把用户已开启的设置静默抹成关闭
         if self._devices:
             settings_store.set_voice_fab_enabled(self._voice_fab_toggle.isChecked())
+        settings_store.set_hide_no_func_devices(self._hide_toggle.isChecked())
         settings_store.set_theme_mode(self._pending_mode)
         # 开机自启动写注册表：失败不阻断其余设置保存。
         # 开发模式开关已置灰为关，此处顺带清掉历史残留的无效注册项

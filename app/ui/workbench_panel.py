@@ -208,14 +208,14 @@ class WorkbenchPanel(QWidget):
         icon.setAlignment(Qt.AlignCenter)
         icon.setStyleSheet(f"color: {SiColors.OFFLINE_SUB}; font-size: 28pt; background: transparent;")
         el.addWidget(icon)
-        t = QLabel("此设备控制面板还是空的")
-        t.setAlignment(Qt.AlignCenter)
-        t.setStyleSheet(f"color: {SiColors.TEXT_PRIMARY}; font-size: 11pt; background: transparent;")
-        el.addWidget(t)
-        d = QLabel("点击下方按钮添加控制功能")
-        d.setAlignment(Qt.AlignCenter)
-        d.setStyleSheet(f"color: {SiColors.TEXT_SECONDARY}; font-size: 9pt; background: transparent;")
-        el.addWidget(d)
+        self._empty_title = QLabel("此设备控制面板还是空的")
+        self._empty_title.setAlignment(Qt.AlignCenter)
+        self._empty_title.setStyleSheet(f"color: {SiColors.TEXT_PRIMARY}; font-size: 11pt; background: transparent;")
+        el.addWidget(self._empty_title)
+        self._empty_desc = QLabel("点击下方按钮添加控制功能")
+        self._empty_desc.setAlignment(Qt.AlignCenter)
+        self._empty_desc.setStyleSheet(f"color: {SiColors.TEXT_SECONDARY}; font-size: 9pt; background: transparent;")
+        el.addWidget(self._empty_desc)
         el.addSpacing(12)
         self._empty_add_btn = QPushButton("添加功能")
         self._empty_add_btn.setCursor(Qt.PointingHandCursor)
@@ -481,6 +481,16 @@ class WorkbenchPanel(QWidget):
     def _render_workbench(self) -> None:
         self._clear_grid()
         if not self._active_keys:
+            # 属性与动作皆空的设备（如部分 BLE 类产品）没有可控制的
+            # 功能，给出明确提示并隐藏“添加功能”入口
+            no_funcs = bool(self._detail) and not self._detail.props and not self._detail.actions
+            self._empty_title.setText(
+                "该设备无公开的可控制功能"
+                if no_funcs else "此设备控制面板还是空的")
+            self._empty_desc.setText(
+                "该设备未发布功能规格（常见于蓝牙类产品），无法提供控制面板"
+                if no_funcs else "点击下方按钮添加控制功能")
+            self._empty_add_btn.setVisible(not no_funcs)
             self._empty.show()
             self._body.hide()
             self._footer_add_btn.hide()
