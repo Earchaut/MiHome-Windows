@@ -22,6 +22,7 @@ _DEFAULTS: dict = {
     "voice_fab_enabled": True,
     "theme": "system",  # system / light / dark
     "hide_no_func_devices": False,
+    "default_speaker_did": "",  # 小爱指令默认输出音箱；空串=自动（第一个在线）
     "ui_scale": 1.0,    # 界面缩放个人微调乘数（叠加在软件基准缩放之上），需重启生效
 }
 
@@ -70,6 +71,21 @@ def get_voice_fab_enabled() -> bool:
 def set_voice_fab_enabled(value: bool) -> None:
     raw = _read_raw()
     raw["voice_fab_enabled"] = bool(value)
+    _write_raw(raw)
+
+
+def get_default_speaker_did() -> str:
+    """小爱指令默认输出音箱的 did；空串表示自动（第一个在线音箱）。
+
+    设备被移除或离线时不强制：调用方找不到该 did 时回退自动选择。
+    """
+    value = _read_raw().get("default_speaker_did", "")
+    return value if isinstance(value, str) else ""
+
+
+def set_default_speaker_did(value: str) -> None:
+    raw = _read_raw()
+    raw["default_speaker_did"] = value if isinstance(value, str) else ""
     _write_raw(raw)
 
 
