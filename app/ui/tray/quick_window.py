@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 
 import qtawesome as qta
 
-from app.core import tray_store
+from app.core import settings_store, tray_store
 from app.core.jobs import JobExecutor
 from app.core.models import DeviceInfo, is_speaker
 from app.core.service import MijiaService
@@ -264,9 +264,18 @@ class TrayQuickWindow(QDialog):
             self._typewriter.stop(clear=True)
         self._sync_tray_height()
 
+    def _pick_speaker(self) -> DeviceInfo | None:
+        """输出音箱：设置的默认音箱（在线时）优先，否则第一个在线音箱。"""
+        pref = settings_store.get_default_speaker_did()
+        if pref:
+            for d in self._devices:
+                if d.did == pref and is_speaker(d) and d.online:
+                    return d
+        return next((d for d in self._devices if is_speaker(d) and d.online), None)
+
     def _update_audio_bar(self) -> None:
         # 有在线小爱音箱时显示音频控制栏；无则隐藏
-        speaker = next((d for d in self._devices if is_speaker(d) and d.online), None)
+        speaker = self._pick_speaker()
         if speaker is not None:
             self._audio_bar.set_speaker(speaker.did)
         else:
@@ -306,19 +315,26 @@ class TrayQuickWindow(QDialog):
         text = self._voice_edit.text().strip()
         if not text:
             return
-        speaker = next((d for d in self._devices if is_speaker(d) and d.online), None)
+        speaker = self._pick_speaker()
         if speaker is None:
             return
+        # 设置的默认音箱不在线/不在列表 → 已回退：提示里说明，并把
+        # 设置回退为「自动」（否则偏好一直指向离线设备，每次都要回退）
+        pref = settings_store.get_default_speaker_did()
+        fallback_note = ""
+        if pref and pref != speaker.did:
+            fallback_note = f"（首选音箱离线，已由「{speaker.name}」代答）"
+            settings_store.set_default_speaker_did("")
         self._voice_edit.clear()
         self._jobs.submit(
             lambda: self._service.run_action(speaker.did, "execute-text-directive", [text]),
-            on_success=lambda _: self._on_voice_success(text),
+            on_success=lambda _, note=fallback_note: self._on_voice_success(text, note),
             on_error=lambda e: self._on_voice_error(e),
         )
 
-    def _on_voice_success(self, text: str) -> None:
+    def _on_voice_success(self, text: str, fallback_note: str = "") -> None:
         from app.ui.toast import Toast
-        Toast.info(self, f"已告诉小爱同学：{text}", 2500)
+        Toast.info(self, f"已告诉小爱同学：{text}{fallback_note}", 3000)
 
     def _on_voice_error(self, err: Exception) -> None:
         from app.ui.toast import Toast
