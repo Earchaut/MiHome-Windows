@@ -8,6 +8,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
+    QWidget,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
@@ -23,6 +24,7 @@ from app.ui.si_theme import SiColors, apply_combo_qss, themed_combo, themed_swit
 # 下拉文案 -> 设置值
 _THEME_MODE_LABELS = {"system": "跟随系统", "light": "浅色模式", "dark": "深色模式"}
 _THEME_LABEL_TO_MODE = {v: k for k, v in _THEME_MODE_LABELS.items()}
+
 
 
 def _sync_switch(switch) -> None:
@@ -74,10 +76,26 @@ class SettingsDialog(OverlayDialog):
         header.addStretch(1)
         lay.addWidget(title_bar)
 
-        # ---- 设置项区域 ----
-        body = QVBoxLayout()
+        # 设置项区域放在滚动区内：高缩放/小屏时面板固定高度装不下
+        # 全部行，滚动代替裁切（标题栏与完成按钮始终固定可见）
+        from PySide6.QtWidgets import QScrollArea
+
+        body_host = QWidget()
+        body_host.setStyleSheet("background: transparent;")
+        body = QVBoxLayout(body_host)
         body.setContentsMargins(8, 6, 8, 0)
         body.setSpacing(8)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollBar:vertical { background: transparent; width: 6px; margin: 0; }"
+            "QScrollBar::handle:vertical { background: #35363f; border-radius: 3px; min-height: 30px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { height: 0; background: none; }")
+        scroll.setWidget(body_host)
+        lay.addWidget(scroll, stretch=1)
 
         # ── 主题配色下拉（跟随系统 / 浅色 / 深色） ──
         self._theme_item = QFrame()
@@ -102,6 +120,34 @@ class SettingsDialog(OverlayDialog):
         self._theme_combo.currentTextChanged.connect(self._on_theme_selected)
         theme_lay.addWidget(self._theme_combo)
         body.addWidget(self._theme_item)
+
+        # ── 界面缩放比例（高 DPI 屏幕微调；更改后重启生效） ──
+        self._scale_item = QFrame()
+        scale_lay = QHBoxLayout(self._scale_item)
+        scale_lay.setContentsMargins(14, 12, 14, 12)
+        scale_lay.setSpacing(12)
+        scale_texts = QVBoxLayout()
+        scale_texts.setContentsMargins(0, 0, 0, 0)
+        scale_texts.setSpacing(4)
+        self._scale_label = QLabel("界面缩放比例")
+        scale_texts.addWidget(self._scale_label)
+        self._scale_desc = QLabel(
+            "调整界面整体元素大小（在系统缩放之上叠加），适用于高 DPI 屏幕使用"
+            "较高系统缩放时觉得界面偏大的情况；更改后需重启应用生效")
+        self._scale_desc.setWordWrap(True)
+        self._scale_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        scale_texts.addWidget(self._scale_desc)
+        scale_lay.addLayout(scale_texts, stretch=1)
+        self._original_ui_scale = settings_store.get_ui_scale()
+        self._pending_ui_scale = self._original_ui_scale
+        scale_labels = {f"{s:g}": f"{round(s * 100):d}%" for s in settings_store.UI_SCALES}
+        scale_key = min(scale_labels, key=lambda k: abs(float(k) - self._pending_ui_scale))
+        self._scale_combo = themed_combo(
+            [scale_labels[k] for k in sorted(scale_labels, key=float)],
+            current=scale_labels[scale_key])
+        self._scale_combo.currentTextChanged.connect(self._on_scale_selected)
+        scale_lay.addWidget(self._scale_combo)
+        body.addWidget(self._scale_item)
 
         # ── 开机自启动（写注册表 HKCU Run，默认关闭） ──
         self._autostart_item = QFrame()
@@ -221,7 +267,6 @@ class SettingsDialog(OverlayDialog):
 
 
         body.addStretch(1)
-        lay.addLayout(body, stretch=1)
 
         # ---- 底部按钮 ----
         btn_row = QHBoxLayout()
@@ -244,18 +289,18 @@ class SettingsDialog(OverlayDialog):
         panel_card = f"QFrame {{ background: {SiColors.CARD}; border-radius: 10px; }}"
         for item in (self._tray_item, self._start_min_item,
                      self._fab_item, self._theme_item, self._autostart_item,
-                     self._hide_item):
+                     self._hide_item, self._scale_item):
             item.setStyleSheet(panel_card)
         self._title_label.setStyleSheet(
             f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
         for label in (self._tray_label, self._start_min_label,
                       self._fab_label, self._theme_label, self._autostart_label,
-                      self._hide_label):
+                      self._hide_label, self._scale_label):
             label.setStyleSheet(
                 f"color: {SiColors.TEXT_PRIMARY}; background: transparent; font-size: 10pt;")
         for desc in (self._tray_desc, self._start_min_desc,
                      self._fab_desc, self._theme_desc, self._autostart_desc,
-                     self._hide_desc):
+                     self._hide_desc, self._scale_desc):
             desc.setStyleSheet(
                 f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 7pt;")
         self._done_btn.setStyleSheet(
@@ -264,6 +309,9 @@ class SettingsDialog(OverlayDialog):
             f"QPushButton:hover {{ background: {SiColors.THEME_HOVER}; }}")
         apply_combo_qss(self._theme_combo)
         self._theme_combo.set_arrow_color(SiColors.TEXT_SECONDARY)
+        # 界面缩放下拉同样随主题刷新（遗漏曾致切主题后仍保持旧深色样式）
+        apply_combo_qss(self._scale_combo)
+        self._scale_combo.set_arrow_color(SiColors.TEXT_SECONDARY)
 
     def _apply_autostart_state(self, supported: bool) -> None:
         """开发模式下灰置自启动行（开关透明度 + 文字变灰）。"""
@@ -299,6 +347,13 @@ class SettingsDialog(OverlayDialog):
         if hasattr(win, "apply_theme_mode"):
             win.apply_theme_mode(mode)
 
+    def _on_scale_selected(self, text: str) -> None:
+        """缩放仅落盘：Qt 的缩放因子须在应用启动前设置，重启后生效。"""
+        try:
+            self._pending_ui_scale = float(text.replace("%", "")) / 100.0
+        except ValueError:
+            return
+
     def _save_and_accept(self) -> None:
         settings_store.set_minimize_to_tray(self._tray_toggle.isChecked())
         # 子开关仅在父开关开启时有效，关闭时强制写入 False
@@ -313,6 +368,7 @@ class SettingsDialog(OverlayDialog):
             settings_store.set_voice_fab_enabled(self._voice_fab_toggle.isChecked())
         settings_store.set_hide_no_func_devices(self._hide_toggle.isChecked())
         settings_store.set_theme_mode(self._pending_mode)
+        settings_store.set_ui_scale(self._pending_ui_scale)
         # 开机自启动写注册表：失败不阻断其余设置保存。
         # 开发模式开关已置灰为关，此处顺带清掉历史残留的无效注册项
         try:

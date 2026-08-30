@@ -22,6 +22,7 @@ _DEFAULTS: dict = {
     "voice_fab_enabled": True,
     "theme": "system",  # system / light / dark
     "hide_no_func_devices": False,
+    "ui_scale": 1.0,    # 界面缩放个人微调乘数（叠加在软件基准缩放之上），需重启生效
 }
 
 
@@ -80,6 +81,36 @@ def get_hide_no_func_devices() -> bool:
 def set_hide_no_func_devices(value: bool) -> None:
     raw = _read_raw()
     raw["hide_no_func_devices"] = bool(value)
+    _write_raw(raw)
+
+
+# 界面缩放档位（设置页下拉选项），范围 50%–200%
+UI_SCALES = (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0)
+_UI_SCALE_MIN, _UI_SCALE_MAX = 0.5, 2.0
+
+
+_UI_SCALE_DEFAULT = 1.0
+
+
+def get_ui_scale() -> float:
+    """界面缩放个人微调乘数（叠加在软件基准 1.25 之上），默认 100%。
+
+    档位值直接用；手工改配置文件的任意值按范围收窄；非法值回退默认。
+    """
+    try:
+        value = float(_read_raw().get("ui_scale", _UI_SCALE_DEFAULT))
+    except (TypeError, ValueError):
+        return _UI_SCALE_DEFAULT
+    if value in UI_SCALES:
+        return value
+    return min(max(value, _UI_SCALE_MIN), _UI_SCALE_MAX) if value > 0 else _UI_SCALE_DEFAULT
+
+
+def set_ui_scale(value: float) -> None:
+    raw = _read_raw()
+    value = float(value)
+    # 超出 50%-200% 范围的值钳制到边界
+    raw["ui_scale"] = min(max(value, _UI_SCALE_MIN), _UI_SCALE_MAX)
     _write_raw(raw)
 
 
