@@ -714,12 +714,22 @@ class MainWindow(QMainWindow):
         self._update_voice_fab()
 
     def _update_voice_fab(self) -> None:
-        """根据设置与设备列表决定小爱悬浮按钮显隐。"""
-        from app.core.settings_store import get_voice_fab_enabled
+        """根据设置与设备列表决定小爱悬浮按钮显隐。
+
+        输出音箱：设置的默认音箱（在线时）优先，否则回退第一个在线音箱。
+        """
+        from app.core.settings_store import get_default_speaker_did, get_voice_fab_enabled
+        pref = get_default_speaker_did()
         speaker = next(
-            (d for d in self._all_devices if is_speaker(d) and d.online),
+            (d for d in self._all_devices
+             if d.did == pref and is_speaker(d) and d.online),
             None,
         )
+        if speaker is None:
+            speaker = next(
+                (d for d in self._all_devices if is_speaker(d) and d.online),
+                None,
+            )
         self._voice_did = speaker.did if speaker else None
         # 仅当设置开启且存在在线音箱时显示
         show = get_voice_fab_enabled() and speaker is not None

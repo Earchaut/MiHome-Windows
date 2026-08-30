@@ -198,6 +198,41 @@ class SettingsDialog(OverlayDialog):
         fab_lay.addWidget(self._voice_fab_toggle)
         body.addWidget(self._fab_item)
 
+        # ── 默认输出音箱（小爱指令发往哪台音箱） ──
+        self._speaker_item = QFrame()
+        speaker_lay = QHBoxLayout(self._speaker_item)
+        speaker_lay.setContentsMargins(14, 12, 14, 12)
+        speaker_lay.setSpacing(12)
+        speaker_texts = QVBoxLayout()
+        speaker_texts.setContentsMargins(0, 0, 0, 0)
+        speaker_texts.setSpacing(4)
+        self._speaker_label = QLabel("默认输出音箱")
+        speaker_texts.addWidget(self._speaker_label)
+        self._speaker_desc = QLabel("小爱语音指令默认发往的音箱；选择「自动」时使用设备列表中第一个在线音箱")
+        self._speaker_desc.setWordWrap(True)
+        self._speaker_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        speaker_texts.addWidget(self._speaker_desc)
+        speaker_lay.addLayout(speaker_texts, stretch=1)
+        # 全部音箱（含离线，离线时运行中自动回退）；在线优先排序
+        speakers = sorted(
+            (d for d in self._devices if is_speaker(d)),
+            key=lambda d: (0 if d.online else 1, d.name, d.did),
+        )
+        self._speaker_options: list[tuple[str, str]] = [
+            ("", "自动（第一个在线音箱）"),
+        ] + [(d.did, f"{d.name}（{d.room_name}）") for d in speakers]
+        current_did = settings_store.get_default_speaker_did()
+        cur_label = next(
+            (label for did, label in self._speaker_options if did == current_did),
+            self._speaker_options[0][1],
+        )
+        self._speaker_combo = themed_combo(
+            [label for _, label in self._speaker_options], current=cur_label)
+        # 音箱名含房间号较长，覆盖 themed_combo 的窄宽默认值
+        self._speaker_combo.setFixedWidth(200)
+        speaker_lay.addWidget(self._speaker_combo)
+        body.addWidget(self._speaker_item)
+
         # ── 隐藏无可控制功能的设备 ──
         self._hide_item = QFrame()
         hide_lay = QHBoxLayout(self._hide_item)
@@ -257,6 +292,7 @@ class SettingsDialog(OverlayDialog):
         self._tray_toggle.toggled.connect(self._on_tray_toggled)
         self._on_tray_toggled(self._tray_toggle.isChecked())
         self._apply_voice_fab_state(self._has_speaker)
+        self._apply_speaker_state(self._has_speaker)
         self._apply_autostart_state(self._autostart_supported)
 
     def _apply_styles(self) -> None:
@@ -264,18 +300,18 @@ class SettingsDialog(OverlayDialog):
         panel_card = f"QFrame {{ background: {SiColors.CARD}; border-radius: 10px; }}"
         for item in (self._tray_item, self._start_min_item,
                      self._fab_item, self._theme_item, self._autostart_item,
-                     self._hide_item, self._scene_tab_item):
+                     self._hide_item, self._scene_tab_item, self._speaker_item):
             item.setStyleSheet(panel_card)
         self._title_label.setStyleSheet(
             f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
         for label in (self._tray_label, self._start_min_label,
                       self._fab_label, self._theme_label, self._autostart_label,
-                      self._hide_label, self._scene_tab_label):
+                      self._hide_label, self._scene_tab_label, self._speaker_label):
             label.setStyleSheet(
                 f"color: {SiColors.TEXT_PRIMARY}; background: transparent; font-size: 10pt;")
         for desc in (self._tray_desc, self._start_min_desc,
                      self._fab_desc, self._theme_desc, self._autostart_desc,
-                     self._hide_desc, self._scene_tab_desc):
+                     self._hide_desc, self._scene_tab_desc, self._speaker_desc):
             desc.setStyleSheet(
                 f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 7pt;")
         self._done_btn.setStyleSheet(
@@ -307,6 +343,7 @@ class SettingsDialog(OverlayDialog):
         self._apply_styles()
         self._on_tray_toggled(self._tray_toggle.isChecked())
         self._apply_voice_fab_state(self._has_speaker)
+        self._apply_speaker_state(self._has_speaker)
         self._apply_autostart_state(self._autostart_supported)
 
     def _on_theme_selected(self, text: str) -> None:
@@ -326,6 +363,10 @@ class SettingsDialog(OverlayDialog):
             settings_store.set_start_minimized(self._start_min_toggle.isChecked())
         else:
             settings_store.set_start_minimized(False)
+        # 默认输出音箱：下拉文案反查 did；无音箱时被灰置为「自动」存空串
+        idx = self._speaker_combo.currentIndex()
+        if 0 <= idx < len(self._speaker_options):
+            settings_store.set_default_speaker_did(self._speaker_options[idx][0])
         # 语音悬浮球仅在带设备上下文时落盘：设备列表为空（如启动早期
         # 打开设置）时 has_speaker 恒 False 会强制取消勾选，若照常
         # 落盘会把用户已开启的设置静默抹成关闭
@@ -350,6 +391,23 @@ class SettingsDialog(OverlayDialog):
             if hasattr(win, "apply_theme_mode"):
                 win.apply_theme_mode(self._original_mode)
         super().done(result)
+
+    def _apply_speaker_state(self, has_speaker: bool) -> None:
+        """有在线音箱时可选择；无则灰置下拉并强制「自动」。"""
+        self._speaker_combo.setEnabled(has_speaker)
+        color = SiColors.TEXT_PRIMARY if has_speaker else SiColors.TEXT_DISABLED
+        desc_color = SiColors.TEXT_SECONDARY if has_speaker else SiColors.TEXT_FAINT
+        self._speaker_label.setStyleSheet(
+            f"color: {color}; background: transparent; font-size: 10pt;")
+        self._speaker_desc.setStyleSheet(
+            f"color: {desc_color}; background: transparent; font-size: 7pt;")
+        if has_speaker:
+            self._speaker_combo.setGraphicsEffect(None)
+        else:
+            eff = QGraphicsOpacityEffect(self._speaker_combo)
+            eff.setOpacity(0.35)
+            self._speaker_combo.setGraphicsEffect(eff)
+            self._speaker_combo.setCurrentIndex(0)
 
     def _apply_voice_fab_state(self, has_speaker: bool) -> None:
         """有音箱时可交互，无音箱时灰置且强制关闭。"""
