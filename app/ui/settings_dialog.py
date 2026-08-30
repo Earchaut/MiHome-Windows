@@ -12,7 +12,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
+    QWidget,
 )
 
 from app.core import settings_store
@@ -74,8 +76,15 @@ class SettingsDialog(OverlayDialog):
         header.addStretch(1)
         lay.addWidget(title_bar)
 
-        # ---- 设置项区域 ----
-        body = QVBoxLayout()
+        # ---- 设置项区域（可滚动：项数增多后不压缩、各项高度恒定） ----
+        body_scroll = QScrollArea()
+        body_scroll.setWidgetResizable(True)
+        body_scroll.setFrameShape(QScrollArea.NoFrame)
+        body_scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }")
+        body_host = QWidget()
+        body_host.setStyleSheet("background: transparent;")
+        body = QVBoxLayout(body_host)
         body.setContentsMargins(8, 6, 8, 0)
         body.setSpacing(8)
 
@@ -87,12 +96,14 @@ class SettingsDialog(OverlayDialog):
         theme_texts = QVBoxLayout()
         theme_texts.setContentsMargins(0, 0, 0, 0)
         theme_texts.setSpacing(4)
+        theme_texts.addStretch(1)
         self._theme_label = QLabel("主题配色")
         theme_texts.addWidget(self._theme_label)
         self._theme_desc = QLabel("切换界面明暗配色；「跟随系统」随 Windows 深浅色模式自动变化")
         self._theme_desc.setWordWrap(True)
         self._theme_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
         theme_texts.addWidget(self._theme_desc)
+        theme_texts.addStretch(1)
         theme_lay.addLayout(theme_texts, stretch=1)
         self._original_mode = settings_store.get_theme_mode()
         self._pending_mode = self._original_mode
@@ -111,12 +122,14 @@ class SettingsDialog(OverlayDialog):
         autostart_texts = QVBoxLayout()
         autostart_texts.setContentsMargins(0, 0, 0, 0)
         autostart_texts.setSpacing(4)
+        autostart_texts.addStretch(1)
         self._autostart_label = QLabel("开机自启动")
         autostart_texts.addWidget(self._autostart_label)
         self._autostart_desc = QLabel("开启后，Windows 登录时自动启动米家（可与「以系统托盘方式启动」搭配静默运行）")
         self._autostart_desc.setWordWrap(True)
         self._autostart_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
         autostart_texts.addWidget(self._autostart_desc)
+        autostart_texts.addStretch(1)
         autostart_lay.addLayout(autostart_texts, stretch=1)
         self._autostart_toggle = themed_switch()
         # 自启动仅构建版支持：开发模式置灰并提示，保存时清理残留注册项
@@ -142,12 +155,14 @@ class SettingsDialog(OverlayDialog):
         tray_texts = QVBoxLayout()
         tray_texts.setContentsMargins(0, 0, 0, 0)
         tray_texts.setSpacing(4)
+        tray_texts.addStretch(1)
         self._tray_label = QLabel("启用带快捷操作面板的系统托盘")
         tray_texts.addWidget(self._tray_label)
         self._tray_desc = QLabel("开启后，关闭主窗口时将最小化到系统托盘并启用托盘快捷操作面板")
         self._tray_desc.setWordWrap(True)
         self._tray_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
         tray_texts.addWidget(self._tray_desc)
+        tray_texts.addStretch(1)
         tray_lay.addLayout(tray_texts, stretch=1)
         self._tray_toggle = themed_switch()
         self._tray_toggle.setChecked(settings_store.get_minimize_to_tray())
@@ -163,12 +178,14 @@ class SettingsDialog(OverlayDialog):
         start_min_texts = QVBoxLayout()
         start_min_texts.setContentsMargins(0, 0, 0, 0)
         start_min_texts.setSpacing(4)
+        start_min_texts.addStretch(1)
         self._start_min_label = QLabel("以系统托盘方式启动")
         start_min_texts.addWidget(self._start_min_label)
         self._start_min_desc = QLabel("开启后，启动软件时将以系统托盘的方式静默启动，不唤出主界面（该功能需开启系统托盘功能可选）")
         self._start_min_desc.setWordWrap(True)
         self._start_min_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
         start_min_texts.addWidget(self._start_min_desc)
+        start_min_texts.addStretch(1)
         start_min_lay.addLayout(start_min_texts, stretch=1)
         self._start_min_toggle = themed_switch()
         self._start_min_toggle.setChecked(settings_store.get_start_minimized())
@@ -185,12 +202,14 @@ class SettingsDialog(OverlayDialog):
         fab_texts = QVBoxLayout()
         fab_texts.setContentsMargins(0, 0, 0, 0)
         fab_texts.setSpacing(4)
+        fab_texts.addStretch(1)
         self._fab_label = QLabel("开启小爱同学悬浮对话按钮")
         fab_texts.addWidget(self._fab_label)
         self._fab_desc = QLabel("启用位于主界面右下角的小爱同学对话悬浮按钮（需设备里有小爱音箱）")
         self._fab_desc.setWordWrap(True)
         self._fab_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
         fab_texts.addWidget(self._fab_desc)
+        fab_texts.addStretch(1)
         fab_lay.addLayout(fab_texts, stretch=1)
         self._voice_fab_toggle = themed_switch()
         self._voice_fab_toggle.setChecked(settings_store.get_voice_fab_enabled())
@@ -206,12 +225,14 @@ class SettingsDialog(OverlayDialog):
         speaker_texts = QVBoxLayout()
         speaker_texts.setContentsMargins(0, 0, 0, 0)
         speaker_texts.setSpacing(4)
+        speaker_texts.addStretch(1)
         self._speaker_label = QLabel("默认输出音箱")
         speaker_texts.addWidget(self._speaker_label)
         self._speaker_desc = QLabel("小爱语音指令默认发往的音箱；选择「自动」时使用设备列表中第一个在线音箱")
         self._speaker_desc.setWordWrap(True)
         self._speaker_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
         speaker_texts.addWidget(self._speaker_desc)
+        speaker_texts.addStretch(1)
         speaker_lay.addLayout(speaker_texts, stretch=1)
         # 全部音箱（含离线，离线时运行中自动回退）；在线优先排序
         speakers = sorted(
@@ -241,12 +262,14 @@ class SettingsDialog(OverlayDialog):
         hide_texts = QVBoxLayout()
         hide_texts.setContentsMargins(0, 0, 0, 0)
         hide_texts.setSpacing(4)
+        hide_texts.addStretch(1)
         self._hide_label = QLabel("隐藏无可控制功能的设备")
         hide_texts.addWidget(self._hide_label)
         self._hide_desc = QLabel("无公开功能规格或规格无属性的设备（如部分蓝牙类产品）将不在主页显示")
         self._hide_desc.setWordWrap(True)
         self._hide_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
         hide_texts.addWidget(self._hide_desc)
+        hide_texts.addStretch(1)
         hide_lay.addLayout(hide_texts, stretch=1)
         self._hide_toggle = themed_switch()
         self._hide_toggle.setChecked(settings_store.get_hide_no_func_devices())
@@ -256,7 +279,8 @@ class SettingsDialog(OverlayDialog):
 
 
         body.addStretch(1)
-        lay.addLayout(body, stretch=1)
+        body_scroll.setWidget(body_host)
+        lay.addWidget(body_scroll, stretch=1)
 
         # ---- 底部按钮 ----
         btn_row = QHBoxLayout()
@@ -282,6 +306,9 @@ class SettingsDialog(OverlayDialog):
                      self._fab_item, self._theme_item, self._autostart_item,
                      self._hide_item, self._speaker_item):
             item.setStyleSheet(panel_card)
+            # 全部设置项等高：滚动区内布局按 sizeHint 分配，固定高度
+            # 保证文字不被压缩裁切、视觉整齐
+            item.setFixedHeight(64)
         self._title_label.setStyleSheet(
             f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
         for label in (self._tray_label, self._start_min_label,
