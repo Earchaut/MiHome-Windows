@@ -285,8 +285,12 @@ class SettingsDialog(OverlayDialog):
         )
         self._speaker_combo = themed_combo(
             [label for _, label in self._speaker_options], current=cur_label)
-        # 音箱名含房间号较长，覆盖 themed_combo 的窄宽默认值
-        self._speaker_combo.setFixedWidth(200)
+        # 音箱名含房间号可能较长：按最长选项文本自适应宽度
+        # （字体度量 + 箭头/内边距余量），避免选项被裁切
+        fm = self._speaker_combo.fontMetrics()
+        option_labels = [label for _, label in self._speaker_options]
+        text_w = max((fm.horizontalAdvance(t) for t in option_labels), default=120)
+        self._speaker_combo.setFixedWidth(min(max(text_w + 48, 150), 300))
         speaker_lay.addWidget(self._speaker_combo)
         body.addWidget(self._speaker_item)
 

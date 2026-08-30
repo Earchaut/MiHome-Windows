@@ -727,9 +727,18 @@ class MainWindow(QMainWindow):
         did = self._voice_did
         if did is None:
             return
+        # 设置的默认音箱离线/不在列表 → 已回退：提示里说明，并把
+        # 设置回退为「自动」（否则偏好一直指向离线设备，每次都要回退）
+        from app.core.settings_store import get_default_speaker_did, set_default_speaker_did
+        pref = get_default_speaker_did()
+        fallback_note = ""
+        if pref and pref != did:
+            fallback_note = "（首选音箱离线，已由当前在线音箱代答）"
+            set_default_speaker_did("")
         self._jobs.submit(
             lambda: self._service.run_action(did, "execute-text-directive", [text]),
-            on_success=lambda _: Toast.info(self, f"已告诉小爱同学：{text}", 2500),
+            on_success=lambda _, note=fallback_note: Toast.info(
+                self, f"已告诉小爱同学：{text}{note}", 3000),
             on_error=lambda e: Toast.info(self, f"执行失败：{e}", 4000),
         )
 
