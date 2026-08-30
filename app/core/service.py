@@ -27,7 +27,7 @@ from mijiaAPI import (
 )
 from mijiaAPI.devices import DevAction, DevProp
 
-from .models import ActionInfo, DeviceDetail, DeviceInfo, PropInfo
+from .models import ActionInfo, DeviceDetail, DeviceInfo, PropInfo, SceneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,8 @@ class MijiaService:
         # spec 产品名缓存就绪后的产品页中文名缓存：
         # model -> 中文名或 None（已确认无中文名，不再重查）
         self._product_page_names: dict[str, str | None] = {}
+        # 家庭名 -> 家庭 ID 映射，场景列表按家庭过滤用；懒加载缓存
+        self._home_ids: dict[str, str] | None = None
 
     def _init_api(self) -> mijiaAPI:
         """构造上游客户端；认证文件损坏时隔离坏文件并降级为未登录。
@@ -146,6 +148,60 @@ class MijiaService:
                 online=bool(d.get("isOnline", False)),
             ))
         return sorted(result, key=lambda x: (x.home_name, x.room_name, x.name))
+
+    # ---------- 场景（手动控制） ----------
+
+    def scene_list(self, home_name: str | None = None) -> list[SceneInfo]:
+        """获取手动场景列表；home_name 为 None 时返回全部家庭的场景。
+
+        界面层只有家庭名称，上游接口要家庭 ID：经 _home_ids_map 映射，
+        家庭结构变更概率极低，映射一次拉取后长期缓存。
+        """
+        id_to_name = {v: k for k, v in self._home_ids_map().items()}
+        if home_name is None:
+            home_id: str | None = None
+        else:
+            home_id = id_to_name.get(home_name)
+            if home_id is None:
+                return []
+        try:
+            scenes = self._api.get_scenes_list(home_id)
+        except Exception as exc:
+            raise _wrap_error(exc, "获取场景列表失败") from exc
+        return [
+            SceneInfo(
+                scene_id=str(s["scene_id"]),
+                name=str(s.get("name") or "未命名场景"),
+                # 上游返回的 home_id 与请求的一致，兜底用映射值
+                home_id=str(s.get("home_id") or home_id or ""),
+                # 家庭显示名：反查映射（含「全部」路径下跨家庭场景）
+                home_name=id_to_name.get(
+                    str(s.get("home_id") or home_id or ""), ""),
+            )
+            for s in scenes
+        ]
+
+    def run_scene(self, scene: SceneInfo) -> None:
+        """执行手动场景；上游返回值为假视为失败。"""
+        try:
+            ok = self._api.run_scene(scene.scene_id, scene.home_id)
+        except Exception as exc:
+            raise _wrap_error(exc, f"执行场景「{scene.name}」失败") from exc
+        if not ok:
+            raise ServiceError(f"执行场景「{scene.name}」失败")
+
+    def _home_ids_map(self) -> dict[str, str]:
+        """家庭名 -> 家庭 ID 映射，懒加载缓存。"""
+        if self._home_ids is None:
+            try:
+                homes = self._api.get_homes_list()
+            except Exception as exc:
+                raise _wrap_error(exc, "获取家庭列表失败") from exc
+            self._home_ids = {
+                str(h.get("name")): str(h.get("id"))
+                for h in homes if h.get("id") is not None
+            }
+        return self._home_ids
 
     # ---------- 设备控制 ----------
 
