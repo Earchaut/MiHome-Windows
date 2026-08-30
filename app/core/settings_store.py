@@ -25,6 +25,7 @@ _DEFAULTS: dict = {
     "default_speaker_did": "",  # 小爱指令默认输出音箱；空串=自动（第一个在线）
     "ui_scale": 1.0,    # 界面缩放个人微调乘数（叠加在软件基准缩放之上），需重启生效
     "tray_columns": 2,  # 托盘快捷窗口卡片列数：1 或 2
+    "check_update_enabled": True,  # 启动时自动检查 GitHub 新版本
 }
 
 
@@ -113,6 +114,17 @@ def get_tray_columns() -> int:
 def set_tray_columns(value: int) -> None:
     raw = _read_raw()
     raw["tray_columns"] = int(value) if int(value) in (1, 2) else 2
+    _write_raw(raw)
+
+
+def get_check_update_enabled() -> bool:
+    """启动时是否自动检查 GitHub 新版本，默认开启。"""
+    return bool(_read_raw().get("check_update_enabled", True))
+
+
+def set_check_update_enabled(value: bool) -> None:
+    raw = _read_raw()
+    raw["check_update_enabled"] = bool(value)
     _write_raw(raw)
 
 

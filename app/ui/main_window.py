@@ -117,6 +117,8 @@ class MainWindow(QMainWindow):
         self._metrics: dict[str, str | None] = {}
         # 刷新防重入：请求在途时忽略再次点击
         self._loading_devices = False
+        # 启动自动检查更新每次进程只做一次，避免 start 被重复触发
+        self._update_check_done = False
         # 轮询防重入：上一轮批量读取未返回时跳过本轮定时触发
         self._poll_in_flight = False
         # 网格重排防抖：拖动窗口会触发密集 resizeEvent，全部重建
@@ -472,6 +474,28 @@ class MainWindow(QMainWindow):
                 self._after_login_check(False),
             ),
         )
+        self._maybe_check_update()
+
+    def _maybe_check_update(self) -> None:
+        """按设置在启动时后台检查一次 GitHub 新版本。
+
+        延迟数秒发起：错开设备列表加载与可能的扫码弹窗，避免多个
+        对话框同时抢占；静默启动（托盘常驻）也要查，发现新版时
+        对话框独立居中显示。
+        """
+        if self._update_check_done:
+            return
+        self._update_check_done = True
+        from app.core.settings_store import get_check_update_enabled
+        if not get_check_update_enabled():
+            return
+        from PySide6.QtCore import QTimer
+
+        def _run() -> None:
+            from app.ui.update_flow import check_update
+            check_update(self, manual=False)
+
+        QTimer.singleShot(3000, self, _run)
 
     def _after_login_check(self, logged_in: bool) -> None:
         if logged_in:
