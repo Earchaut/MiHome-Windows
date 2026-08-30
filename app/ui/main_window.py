@@ -101,7 +101,9 @@ class MainWindow(QMainWindow):
         # 保持原生窗口框架，通过拦截 WM_NCCALCSIZE 抹掉系统标题栏区域：
         # 拖动/双击最大化/最小化动画/Aero Snap/边缘缩放全部由系统原生处理
         self.setWindowFlags(Qt.Window)
-        self.resize(1180, 760)
+        # 默认窗口尺寸在首次显示时按真实 DPR 应用（见 showEvent）：
+        # 构造期窗口未创建，DPR 读数不可靠（曾导致默认尺寸放大一圈）
+        self._default_size_applied = False
         self.setMinimumSize(760, 520)
 
         self._all_devices: list[DeviceInfo] = []
@@ -138,6 +140,11 @@ class MainWindow(QMainWindow):
         self._show_scene_tab = get_show_scene_tab()
         # 产品页名称回退的异步查询防重入
         self._localize_busy = False
+        # DPI 变化时恢复期望逻辑尺寸：Qt 在缩放变化后保持物理尺寸
+        # （逻辑尺寸被重算），窗口会显得偏大且底部留白；这里记住
+        # 用户视角的逻辑尺寸，变化后恢复，让窗口跟随元素一起缩放
+        self._expected_logical: tuple[int, int] | None = None
+        self._last_dpr: float | None = None
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(60)
@@ -1128,22 +1135,71 @@ class MainWindow(QMainWindow):
         if eff <= 0:
             return 1
         cols = (eff + spacing) // (_CARD_FIXED_WIDTH + spacing)
-        cols = max(1, min(cols, 5))
-        # 兜底：极窄窗口至少保证 1 列，避免除零
-        return cols
+        # 不设单排上限——宽屏下应自然补列而不是拉开卡片间距
+        return max(1, cols)
 
     def showEvent(self, event) -> None:  # noqa: N802 (Qt 命名约定)
         super().showEvent(event)
+        # 首次显示：应用默认窗口尺寸 1780×1200 物理像素（按当前有效
+        # 缩放换算逻辑尺寸），并居中于所在屏幕的可用区域。首次启动时
+        # DPR 读数不可靠（曾导致尺寸异常），故延迟到 showEvent——此时
+        # 原生窗口已创建、读数准确。之后的托盘唤出保持上次位置
+        if not self._default_size_applied:
+            self._default_size_applied = True
+            dpr = self.devicePixelRatioF() or 1.0
+            self.resize(round(1780 / dpr), round(1200 / dpr))
+            from PySide6.QtGui import QGuiApplication
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            avail = screen.availableGeometry()
+            self.move(avail.center().x() - self.width() // 2,
+                      avail.center().y() - self.height() // 2)
         # 托盘常驻启动/唤出：隐藏期间积压的网格重建在此执行
         if self._grid_dirty:
             self._rebuild_grid()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt 命名约定)
         super().resizeEvent(event)
+        # 系统缩放切换时 Qt 对无边框窗口的尺寸重算可能失控（窗口被
+        # 成倍放大超出屏幕），每次尺寸变化都钳制回所在屏幕的可用区域
+        self._clamp_to_screen()
+        # 缩放（DPR）变化：Qt 保持物理尺寸导致逻辑尺寸被重算——恢复
+        # 变化前的逻辑尺寸，让窗口与界面元素同步缩放
+        dpr = self.devicePixelRatioF() or 1.0
+        if (self._last_dpr is not None and self._expected_logical is not None
+                and abs(dpr - self._last_dpr) > 1e-9
+                and not self.isMaximized() and not self.isMinimized()):
+            w, h = self._expected_logical
+            self._expected_logical = None
+            QTimer.singleShot(0, lambda: (self.resize(w, h), self._clamp_to_screen()))
+            self._last_dpr = dpr
+        else:
+            self._expected_logical = (self.width(), self.height())
+            self._last_dpr = dpr
         # 拖动窗口时 resizeEvent 每秒触发几十次，全部重建卡片网格代价
         # 太高；防抖等布局稳定，列数真的变化时才重建
         self._resize_timer.start()
         self._voice_fab.reposition()
+
+    def _clamp_to_screen(self) -> None:
+        """把窗口尺寸/位置钳制回所在屏幕的可用工作区。
+
+        覆盖两类异常：系统缩放切换后窗口异常放大；分辨率切换后窗口
+        大半落在屏幕外。最大化/最小化状态不干预。
+        """
+        if self.isMaximized() or self.isMinimized():
+            return
+        screen = self.screen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        w, h = self.width(), self.height()
+        if w > avail.width() or h > avail.height():
+            self.resize(min(w, avail.width()), min(h, avail.height()))
+        # 位置 sanity：窗口完全落在屏幕外时拉回可见区域
+        g = self.geometry()
+        if (g.right() < avail.left() or g.left() > avail.right()
+                or g.bottom() < avail.top() or g.top() > avail.bottom()):
+            self.move(avail.left() + 12, avail.top() + 12)
 
     def _on_resize_settled(self) -> None:
         if self._current_room == _SCENE_TAB:

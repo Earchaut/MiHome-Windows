@@ -36,9 +36,27 @@ def _set_console_visible(visible: bool) -> None:
         pass
 
 
+# 基准界面缩放：整体 UI 在系统缩放之上再乘 1.25，作为软件的默认
+# 观感基线（即此前系统里 QT_SCALE_FACTOR=1.25 时的样子）；设置页的
+# 「界面缩放比例」是在此基准之上的个人微调乘数（默认 100%）。
+_BASE_UI_SCALE = 1.25
+
+
+def _apply_ui_scale_env() -> None:
+    """按「基准 1.25 × 设置乘数」写入 QT_SCALE_FACTOR。
+
+    必须在 QApplication 创建之前调用；Qt 只在初始化时读取该变量，
+    更改后需重启生效。始终覆写：系统环境里可能残留外部设置的值，
+    若不覆盖会与基准叠加导致界面异常巨大。
+    """
+    from app.core.settings_store import get_ui_scale
+    os.environ["QT_SCALE_FACTOR"] = f"{_BASE_UI_SCALE * get_ui_scale():g}"
+
+
 def main() -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    _apply_ui_scale_env()
     app = QApplication(sys.argv)
 
     # 主题必须在创建任何控件之前生效：调色板决定全部内联样式的取值
