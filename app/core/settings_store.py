@@ -23,6 +23,8 @@ _DEFAULTS: dict = {
     "theme": "system",  # system / light / dark
     "hide_no_func_devices": False,
     "ui_scale": 1.0,    # 界面缩放个人微调乘数（叠加在软件基准缩放之上），需重启生效
+    "default_speaker_did": "",  # 小爱指令默认输出音箱；空串=自动（第一个在线）
+    "show_scene_tab": True,
 }
 
 
@@ -73,6 +75,21 @@ def set_voice_fab_enabled(value: bool) -> None:
     _write_raw(raw)
 
 
+def get_default_speaker_did() -> str:
+    """小爱指令默认输出音箱的 did；空串表示自动（第一个在线音箱）。
+
+    设备被移除或离线时不强制：调用方找不到该 did 时回退自动选择。
+    """
+    value = _read_raw().get("default_speaker_did", "")
+    return value if isinstance(value, str) else ""
+
+
+def set_default_speaker_did(value: str) -> None:
+    raw = _read_raw()
+    raw["default_speaker_did"] = value if isinstance(value, str) else ""
+    _write_raw(raw)
+
+
 def get_hide_no_func_devices() -> bool:
     """是否隐藏无可控制功能的设备（无 spec / spec 无属性），默认关闭。"""
     return bool(_read_raw().get("hide_no_func_devices", False))
@@ -111,6 +128,17 @@ def set_ui_scale(value: float) -> None:
     value = float(value)
     # 超出 50%-200% 范围的值钳制到边界
     raw["ui_scale"] = min(max(value, _UI_SCALE_MIN), _UI_SCALE_MAX)
+    _write_raw(raw)
+
+
+def get_show_scene_tab() -> bool:
+    """是否在主页显示「场景」选项卡，默认启用。"""
+    return bool(_read_raw().get("show_scene_tab", True))
+
+
+def set_show_scene_tab(value: bool) -> None:
+    raw = _read_raw()
+    raw["show_scene_tab"] = bool(value)
     _write_raw(raw)
 
 
