@@ -277,6 +277,26 @@ class SettingsDialog(OverlayDialog):
         hide_lay.addWidget(self._hide_toggle)
         body.addWidget(self._hide_item)
 
+        # ── 显示场景选项卡 ──
+        self._scene_tab_item = QFrame()
+        scene_tab_lay = QHBoxLayout(self._scene_tab_item)
+        scene_tab_lay.setContentsMargins(14, 12, 14, 12)
+        scene_tab_lay.setSpacing(12)
+        scene_tab_texts = QVBoxLayout()
+        scene_tab_texts.setContentsMargins(0, 0, 0, 0)
+        scene_tab_texts.setSpacing(4)
+        self._scene_tab_label = QLabel("显示场景选项卡")
+        scene_tab_texts.addWidget(self._scene_tab_label)
+        self._scene_tab_desc = QLabel("开启后，主页选项卡最左侧显示「场景」入口，可查看并执行手动控制场景")
+        self._scene_tab_desc.setWordWrap(True)
+        self._scene_tab_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        scene_tab_texts.addWidget(self._scene_tab_desc)
+        scene_tab_lay.addLayout(scene_tab_texts, stretch=1)
+        self._scene_tab_toggle = themed_switch()
+        self._scene_tab_toggle.setChecked(settings_store.get_show_scene_tab())
+        _sync_switch(self._scene_tab_toggle)
+        scene_tab_lay.addWidget(self._scene_tab_toggle)
+        body.addWidget(self._scene_tab_item)
 
         body.addStretch(1)
         body_scroll.setWidget(body_host)
@@ -304,7 +324,7 @@ class SettingsDialog(OverlayDialog):
         panel_card = f"QFrame {{ background: {SiColors.CARD}; border-radius: 10px; }}"
         for item in (self._tray_item, self._start_min_item,
                      self._fab_item, self._theme_item, self._autostart_item,
-                     self._hide_item, self._speaker_item):
+                     self._hide_item, self._scene_tab_item, self._speaker_item):
             item.setStyleSheet(panel_card)
             # 全部设置项等高：滚动区内布局按 sizeHint 分配，固定高度
             # 保证文字不被压缩裁切、视觉整齐
@@ -313,12 +333,12 @@ class SettingsDialog(OverlayDialog):
             f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
         for label in (self._tray_label, self._start_min_label,
                       self._fab_label, self._theme_label, self._autostart_label,
-                      self._hide_label, self._speaker_label):
+                      self._hide_label, self._scene_tab_label, self._speaker_label):
             label.setStyleSheet(
                 f"color: {SiColors.TEXT_PRIMARY}; background: transparent; font-size: 10pt;")
         for desc in (self._tray_desc, self._start_min_desc,
                      self._fab_desc, self._theme_desc, self._autostart_desc,
-                     self._hide_desc, self._speaker_desc):
+                     self._hide_desc, self._scene_tab_desc, self._speaker_desc):
             desc.setStyleSheet(
                 f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 7pt;")
         self._done_btn.setStyleSheet(
@@ -380,6 +400,7 @@ class SettingsDialog(OverlayDialog):
         if self._devices:
             settings_store.set_voice_fab_enabled(self._voice_fab_toggle.isChecked())
         settings_store.set_hide_no_func_devices(self._hide_toggle.isChecked())
+        settings_store.set_show_scene_tab(self._scene_tab_toggle.isChecked())
         settings_store.set_theme_mode(self._pending_mode)
         # 开机自启动写注册表：失败不阻断其余设置保存。
         # 开发模式开关已置灰为关，此处顺带清掉历史残留的无效注册项
