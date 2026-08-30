@@ -22,6 +22,7 @@ _DEFAULTS: dict = {
     "voice_fab_enabled": True,
     "theme": "system",  # system / light / dark
     "hide_no_func_devices": False,
+    "show_scene_tab": True,
 }
 
 
@@ -80,6 +81,17 @@ def get_hide_no_func_devices() -> bool:
 def set_hide_no_func_devices(value: bool) -> None:
     raw = _read_raw()
     raw["hide_no_func_devices"] = bool(value)
+    _write_raw(raw)
+
+
+def get_show_scene_tab() -> bool:
+    """是否在主页显示「场景」选项卡，默认启用。"""
+    return bool(_read_raw().get("show_scene_tab", True))
+
+
+def set_show_scene_tab(value: bool) -> None:
+    raw = _read_raw()
+    raw["show_scene_tab"] = bool(value)
     _write_raw(raw)
 
 
