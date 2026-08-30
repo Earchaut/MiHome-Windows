@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -37,9 +38,15 @@ class ModuleCard(QFrame):
         self._title.setFont(QFont("Microsoft YaHei UI", 10, QFont.Weight.DemiBold))
         self._title.setStyleSheet(f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
         self._title.setWordWrap(True)
+        # wordWrap 的 QLabel 压缩下限是"最长单词"宽度：长英文功能名会把
+        # 右侧按钮挤出抽屉（QScrollArea 下列表容器被最小宽度撑宽）。
+        # setMinimumWidth(0) 是空操作（默认最小尺寸已是 0），必须用
+        # Ignored 水平策略让布局完全忽略尺寸提示、按分配宽度强制换行
+        self._title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._desc = QLabel(desc)
         self._desc.setStyleSheet(f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 8pt;")
         self._desc.setWordWrap(True)
+        self._desc.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
         text_col.setSpacing(4)
