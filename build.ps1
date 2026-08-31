@@ -137,10 +137,12 @@ $NuitkaArgs = @(
     "--assume-yes-for-downloads"
     "--output-dir=dist"
     "--output-filename=MiHome-Windows.exe"
-    # 版本号与 pyproject.toml 的 project.version 手工保持一致
+    # 版本号自动从 app/__init__.py 的 __version__ 读取，单一信源
+    $AppVersion = (Select-String -Path "app\__init__.py" -Pattern '^__version__\s*=\s*"(.+?)"').Matches[0].Groups[1].Value
+    Write-Host "  Version: $AppVersion" -ForegroundColor Gray
     "--product-name=MiHome-Windows"
-    "--product-version=0.1.0"
-    "--file-version=0.1.0"
+    "--product-version=$AppVersion"
+    "--file-version=$AppVersion"
     "--copyright=Copyright (C) 2026 MiHome-Windows contributors"
 )
 
