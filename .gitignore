@@ -60,3 +60,7 @@ logs/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# 我的文件
+CLAUDE.md
+claude.ps1
