@@ -26,6 +26,7 @@ _DEFAULTS: dict = {
     "ui_scale": 1.0,    # 界面缩放个人微调乘数（叠加在软件基准缩放之上），需重启生效
     "tray_columns": 2,  # 托盘快捷窗口卡片列数：1 或 2
     "check_update_enabled": True,  # 启动时自动检查 GitHub 新版本
+    "show_scene_tab": True,
 }
 
 
@@ -155,6 +156,17 @@ def set_ui_scale(value: float) -> None:
     value = float(value)
     # 超出 50%-200% 范围的值钳制到边界
     raw["ui_scale"] = min(max(value, _UI_SCALE_MIN), _UI_SCALE_MAX)
+    _write_raw(raw)
+
+
+def get_show_scene_tab() -> bool:
+    """是否在主页显示「场景」选项卡，默认启用。"""
+    return bool(_read_raw().get("show_scene_tab", True))
+
+
+def set_show_scene_tab(value: bool) -> None:
+    raw = _read_raw()
+    raw["show_scene_tab"] = bool(value)
     _write_raw(raw)
 
 

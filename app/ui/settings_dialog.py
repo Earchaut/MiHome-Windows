@@ -329,6 +329,16 @@ class SettingsDialog(OverlayDialog):
         _sync_switch(self._hide_toggle)
         hide_row.addWidget(self._hide_toggle)
 
+        # ── 显示场景选项卡（release-0.1.0 并入：主页「场景」入口显隐） ──
+        self._scene_tab_item, self._scene_tab_label, self._scene_tab_desc, scene_tab_row = \
+            self._make_item(
+                "显示场景选项卡",
+                "开启后，主页选项卡最左侧显示「场景」入口，可查看并执行手动控制场景")
+        self._scene_tab_toggle = themed_switch()
+        self._scene_tab_toggle.setChecked(settings_store.get_show_scene_tab())
+        _sync_switch(self._scene_tab_toggle)
+        scene_tab_row.addWidget(self._scene_tab_toggle)
+
         # ── 自动检测新版本 ──
         self._update_item, self._update_label, self._update_desc, update_row = self._make_item(
             "自动检测新版本",
@@ -341,7 +351,8 @@ class SettingsDialog(OverlayDialog):
 
         return self._build_scroll([
             self._autostart_item, self._speaker_item, self._tray_item,
-            self._start_min_item, self._hide_item, self._update_item,
+            self._start_min_item, self._hide_item, self._scene_tab_item,
+            self._update_item,
         ])
 
     # ---------- 分类切换 ----------
@@ -396,7 +407,8 @@ class SettingsDialog(OverlayDialog):
         panel_card = f"QFrame {{ background: {SiColors.CARD}; border-radius: 10px; }}"
         for item in (self._tray_item, self._start_min_item, self._fab_item,
                      self._theme_item, self._autostart_item, self._speaker_item,
-                     self._hide_item, self._scale_item, self._update_item):
+                     self._hide_item, self._scale_item, self._scene_tab_item,
+                     self._update_item):
             item.setStyleSheet(panel_card)
             # 高度按内容自适应（不固定）：长描述换行后行自然变高，
             # 不会被固定 64px 裁掉；短描述保持紧凑。QScrollArea 负责
@@ -406,12 +418,14 @@ class SettingsDialog(OverlayDialog):
             f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
         for label in (self._tray_label, self._start_min_label, self._fab_label,
                       self._theme_label, self._autostart_label, self._speaker_label,
-                      self._hide_label, self._scale_label, self._update_label):
+                      self._hide_label, self._scale_label, self._scene_tab_label,
+                      self._update_label):
             label.setStyleSheet(
                 f"color: {SiColors.TEXT_PRIMARY}; background: transparent; font-size: 10pt;")
         for desc in (self._tray_desc, self._start_min_desc, self._fab_desc,
                      self._theme_desc, self._autostart_desc, self._speaker_desc,
-                     self._hide_desc, self._scale_desc, self._update_desc):
+                     self._hide_desc, self._scale_desc, self._scene_tab_desc,
+                     self._update_desc):
             desc.setStyleSheet(
                 f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 7pt;")
         self._done_btn.setStyleSheet(
@@ -535,6 +549,7 @@ class SettingsDialog(OverlayDialog):
         if self._devices:
             settings_store.set_voice_fab_enabled(self._voice_fab_toggle.isChecked())
         settings_store.set_hide_no_func_devices(self._hide_toggle.isChecked())
+        settings_store.set_show_scene_tab(self._scene_tab_toggle.isChecked())
         settings_store.set_check_update_enabled(self._update_toggle.isChecked())
         settings_store.set_theme_mode(self._pending_mode)
         # 界面缩放：记录是否变化，供保存后提示重启
