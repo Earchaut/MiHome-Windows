@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QSizePolicy
+from PySide6.QtWidgets import QLineEdit, QSizePolicy
 
 from app.siui.components.button import SiSwitchRefactor, SiToggleButtonRefactor
 
@@ -510,11 +510,31 @@ def themed_tab_button(text: str) -> SiToggleButtonRefactor:
     return button
 
 
-def themed_combo(options: list[str], current: str = "") -> "QComboBox":
+class _SelectAllLineEdit(QLineEdit):
+    """editable 下拉的输入框：聚焦/点击时自动全选。
+
+    用户点进输入框直接输入新数字即整体替换（否则光标在末尾，
+    输入会追加到 "100" 后变 "1001"）。
+    """
+
+    def focusInEvent(self, event) -> None:  # noqa: N802
+        super().focusInEvent(event)
+        self.selectAll()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        super().mousePressEvent(event)
+        self.selectAll()
+
+
+def themed_combo(options: list[str], current: str = "",
+                 editable: bool = False) -> "QComboBox":
     """设置页等处的下拉选择器：原生 QComboBox + 主题化样式。
 
     曾用过 siui 的 SiCapsuleComboBox，但其胶囊风格与设置页卡片
     不搭且依赖图标包资源，改回原生控件按调色板着色。
+
+    editable=True 时允许直接键入任意文本（如缩放百分比），下拉仍
+    提供预设档位；输入不会插入列表（保持档位干净）。
     """
     import qtawesome as qta
     from PySide6.QtWidgets import QLabel, QComboBox
@@ -544,30 +564,48 @@ def themed_combo(options: list[str], current: str = "") -> "QComboBox":
 
     combo = _NoWheelCombo()
     combo.addItems(options)
-    if current and current in options:
+    if editable:
+        combo.setEditable(True)
+        # 键入文本不进列表，档位保持预设干净；回车/失焦提交由调用方处理
+        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        # 替换输入框为自动全选版：聚焦/点击即全选，直接输入整体替换
+        combo.setLineEdit(_SelectAllLineEdit(combo))
+        # 关键：移除 completer 关闭自动补全——否则输入 "12" 会被自动匹配
+        # 替换成列表里的 "125%" 之类（用户反馈「输 2 变 75」即此）。
+        # 必须在 setLineEdit 之后：setLineEdit 会重置 completer。
+        combo.setCompleter(None)
+        combo.setCurrentText(current)
+    elif current and current in options:
         combo.setCurrentText(current)
     combo.setCursor(Qt.CursorShape.PointingHandCursor)
     combo.setFixedHeight(32)
-    # 选项最多四个字，固定窄宽即可，避免被布局撑得过宽
+    # 选项最多四个字，固定窄宽即可，避免被布局撑得过宽；
+    # 可编辑下拉同样保持此宽度，与设置页其他下拉（如主题配色）一致。
+    # 弹出列表异常（压缩成几像素）的原因是 drop-down 区被隐藏，
+    # 由 apply_combo_qss(editable=True) 保留 24px 下拉区解决，与宽度无关。
     combo.setFixedWidth(112)
-    apply_combo_qss(combo)
+    apply_combo_qss(combo, editable=editable)
     combo.set_arrow_color(SiColors.TEXT_SECONDARY)
     return combo
 
 
-def apply_combo_qss(combo) -> None:
-    """下拉框与弹出列表按当前调色板着色（主题切换时重设）。"""
+def apply_combo_qss(combo, editable: bool = False) -> None:
+    """下拉框与弹出列表按当前调色板着色（主题切换时重设）。
+
+    editable=True 时保留 ::drop-down 区域宽度：可编辑下拉需要点
+    下拉区才弹出列表（点正文是输入）；隐藏该区域会导致点不开。
+    """
     combo.setStyleSheet(f"""
         QComboBox {{
             background: {SiColors.SURFACE};
             border: 1px solid {SiColors.LINE};
             border-radius: 8px;
-            padding: 4px 28px 4px 12px;
+            padding: 4px {8 if editable else 28}px 4px 12px;
             color: {SiColors.TEXT_PRIMARY};
             font-size: 9pt;
         }}
         QComboBox:hover {{ border-color: {SiColors.THEME}; }}
-        QComboBox::drop-down {{ border: none; width: 0px; }}
+        QComboBox::drop-down {{ border: none; width: {24 if editable else 0}px; }}
         QComboBox::down-arrow {{ width: 0px; height: 0px; }}
         QComboBox QAbstractItemView {{
             background: {SiColors.CARD};
@@ -577,5 +615,10 @@ def apply_combo_qss(combo) -> None:
             selection-background-color: {SiColors.BTN_HOVER};
             selection-color: {SiColors.TEXT_PRIMARY};
             outline: none;
+        }}
+        QComboBox QLineEdit {{
+            background: transparent;
+            border: none;
+            color: {SiColors.TEXT_PRIMARY};
         }}
     """)

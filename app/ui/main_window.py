@@ -13,6 +13,7 @@ import ctypes
 import ctypes.wintypes as wintypes
 import logging
 import sys
+from pathlib import Path
 
 import shiboken6
 from PySide6.QtCore import QPropertyAnimation, QPoint, QSize, Qt, QTimer
@@ -37,6 +38,7 @@ from app.siui.components.button import SiToggleButtonRefactor
 import qtawesome as qta
 
 from app.core import cache as device_cache
+from app.core import icon_store
 from app.core.jobs import JobExecutor
 from app.core.models import DeviceInfo, SceneInfo, is_speaker
 from app.core.service import MijiaService
@@ -120,6 +122,8 @@ class MainWindow(QMainWindow):
         self._metrics: dict[str, str | None] = {}
         # 刷新防重入：请求在途时忽略再次点击
         self._loading_devices = False
+        # 启动自动检查更新每次进程只做一次，避免 start 被重复触发
+        self._update_check_done = False
         # 场景列表（None=尚未加载）；随每次选中场景 tab 后台刷新
         self._scenes: list[SceneInfo] | None = None
         self._scene_cards: dict[str, SceneCard] = {}
@@ -482,6 +486,28 @@ class MainWindow(QMainWindow):
                 self._after_login_check(False),
             ),
         )
+        self._maybe_check_update()
+
+    def _maybe_check_update(self) -> None:
+        """按设置在启动时后台检查一次 GitHub 新版本。
+
+        延迟数秒发起：错开设备列表加载与可能的扫码弹窗，避免多个
+        对话框同时抢占；静默启动（托盘常驻）也要查，发现新版时
+        对话框独立居中显示。
+        """
+        if self._update_check_done:
+            return
+        self._update_check_done = True
+        from app.core.settings_store import get_check_update_enabled
+        if not get_check_update_enabled():
+            return
+        from PySide6.QtCore import QTimer
+
+        def _run() -> None:
+            from app.ui.update_flow import check_update
+            check_update(self, manual=False)
+
+        QTimer.singleShot(3000, self, _run)
 
     def _after_login_check(self, logged_in: bool) -> None:
         if logged_in:
@@ -563,6 +589,45 @@ class MainWindow(QMainWindow):
         self._refresh_metrics()
         self._update_voice_fab()
         self._update_tray_devices()
+        self._load_card_icons()
+
+    # ---------- 设备图标 ----------
+
+    def _load_card_icons(self) -> None:
+        """增量拉取设备图标：只对缓存里没有的型号调接口。
+
+        已下载图片的卡片回填由 _rebuild_grid 负责（建卡即查本地文件），
+        本方法只处理缺失部分：拉 URL、缺图下发下载；图标 URL 与图片
+        都落本地缓存（见 icon_store），设备列表不变时不会重复调接口。
+        """
+        models = sorted({d.model for d in self._all_devices if d.model})
+        if not models:
+            return
+        self._jobs.submit(
+            lambda m=models: self._service.icon_urls(m),
+            on_success=self._on_icons_ready,
+        )
+
+    def _on_icons_ready(self, urls: dict[str, str | None]) -> None:
+        """图标 URL 就绪：缺图的下发后台下载，下载完成回填当前可见卡片。"""
+        for model, url in urls.items():
+            if not url:
+                continue
+            if icon_store.icon_path(model).is_file():
+                continue
+            self._jobs.submit(
+                lambda m=model, u=url: self._service.icon_file(m, u),
+                on_success=lambda p, m=model: self._apply_card_icon(m, str(p))
+                if p else None,
+            )
+
+    def _apply_card_icon(self, model: str, path: str) -> None:
+        """同一型号的所有卡片共用一份图标图片。"""
+        if not path:
+            return
+        for card in self._cards.values():
+            if card.device.model == model:
+                card.set_icon(Path(path))
 
     def _maybe_localize_names(self) -> None:
         """未改名英文设备用中文名替换显示名（两个来源按序兜底）。
@@ -691,8 +756,21 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self, devices=self._all_devices)
         self._settings_dialog = dlg
         dlg.exec()
+        scale_changed = getattr(dlg, "_scale_changed", False)
         dlg.deleteLater()
         self._settings_dialog = None
+        # 界面缩放改动需重启应用生效：提供一键重启（常驻托盘时关窗口
+        # 只是隐藏到托盘、进程仍在，仅提示会让用户以为没生效）
+        if scale_changed:
+            from app.ui.restart import restart_app
+            ret = QMessageBox.question(
+                self, "界面缩放已保存",
+                "界面缩放需重启应用后生效。\n是否立即重启？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes)
+            if ret == QMessageBox.Yes:
+                self._force_quit = True
+                restart_app()
         # 设置可能变了，同步托盘图标显隐
         from app.core.settings_store import get_minimize_to_tray
         if self._tray is not None:
@@ -748,9 +826,18 @@ class MainWindow(QMainWindow):
         did = self._voice_did
         if did is None:
             return
+        # 设置的默认音箱离线/不在列表 → 已回退：提示里说明，并把
+        # 设置回退为「自动」（否则偏好一直指向离线设备，每次都要回退）
+        from app.core.settings_store import get_default_speaker_did, set_default_speaker_did
+        pref = get_default_speaker_did()
+        fallback_note = ""
+        if pref and pref != did:
+            fallback_note = "（首选音箱离线，已由当前在线音箱代答）"
+            set_default_speaker_did("")
         self._jobs.submit(
             lambda: self._service.run_action(did, "execute-text-directive", [text]),
-            on_success=lambda _: Toast.info(self, f"已告诉小爱同学：{text}", 2500),
+            on_success=lambda _, note=fallback_note: Toast.info(
+                self, f"已告诉小爱同学：{text}{note}", 3000),
             on_error=lambda e: Toast.info(self, f"执行失败：{e}", 4000),
         )
 
@@ -1069,6 +1156,11 @@ class MainWindow(QMainWindow):
                 card.set_power_state(known)
             if device.did in self._metrics:
                 card.set_metrics(self._metrics.get(device.did))
+            # 已下载的图标从本地文件回填：主题/tab 切换重建卡片后
+            # 图标不消失；未下载的由 _load_card_icons 后台补齐
+            path = icon_store.icon_path(device.model)
+            if path.is_file():
+                card.set_icon(path)
             card.power_clicked.connect(self._on_power_clicked)
             card.open_requested.connect(self._on_open_device)
             self._cards[device.did] = card

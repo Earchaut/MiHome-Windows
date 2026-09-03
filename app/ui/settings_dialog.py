@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # MiHome-Windows: 米家设备的 Windows 桌面控制端
 # Copyright (C) 2026 MiHome-Windows contributors
-"""设置窗口：无边框可拖拽面板 + 背部暗色遮罩，与设备详情页同款观感。"""
+"""设置窗口：无边框可拖拽面板 + 背部暗色遮罩，与设备详情页同款观感。
 
-from PySide6.QtCore import QEvent, Qt
+设置项按「主题界面 / 应用功能」两分类展示：标题下方的横向 tab 切换
+分类，内容区切页时做整体淡入过渡（与主页切换房间同款），避免直接
+替换带来的生硬变化。
+"""
+
+from PySide6.QtCore import QEvent, QPropertyAnimation, Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
@@ -20,18 +25,51 @@ from PySide6.QtWidgets import (
 from app.core import settings_store
 from app.core.models import is_speaker
 from app.ui.overlay_dialog import OverlayDialog
-from app.ui.si_theme import SiColors, apply_combo_qss, themed_combo, themed_switch
+from app.ui.si_theme import (
+    SiColors,
+    apply_combo_qss,
+    themed_combo,
+    themed_switch,
+    themed_tab_button,
+)
 
 # 下拉文案 -> 设置值
 _THEME_MODE_LABELS = {"system": "跟随系统", "light": "浅色模式", "dark": "深色模式"}
 _THEME_LABEL_TO_MODE = {v: k for k, v in _THEME_MODE_LABELS.items()}
 
+_TAB_APPEARANCE, _TAB_FEATURES = 0, 1
+_TAB_TITLES = ("主题界面", "应用功能")
+# 切页淡入时长：与主页房间切换同款
+_FADE_MS = 160
 
 
 def _sync_switch(switch) -> None:
     """siui 开关进度同步：setChecked 后须手动对齐动画内部 current。"""
     switch.progress = 1 if switch.isChecked() else 0
     switch.progress_ani.fromProperty()
+
+
+class _PagesHost(QWidget):
+    """叠放两页的容器：尺寸变化时把两页同步铺满，保持完全重叠。
+
+    两页刻意不进布局而是绝对定位，同一时刻只有一页可见，切换即
+    hide/show + 新页淡入。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background: transparent;")
+        self._pages: list[QWidget] = []
+
+    def add_page(self, page: QWidget) -> None:
+        page.setParent(self)
+        self._pages.append(page)
+        page.setGeometry(self.rect())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        for page in self._pages:
+            page.setGeometry(self.rect())
 
 
 class SettingsDialog(OverlayDialog):
@@ -43,22 +81,23 @@ class SettingsDialog(OverlayDialog):
         self.setWindowTitle("设置")
         # 尺寸由 showEvent 按主窗口显隐决定：可见时覆盖主窗口，隐藏时铺满屏幕
         self._header_drag_pos = None
+        self._current_tab = _TAB_APPEARANCE
 
         # ---- 圆角面板：居中显示 ----
         # 直接用基类的 overlayPanel 对象名与配套样式；改名会让
         # 基类样式表的选择器对不上，面板退化为透明底
         panel = self._panel
-        # 面板固定大小为主窗口三分之二
+        # 分类展示后单项行更少，面板放大到主窗口约八成，减少滚动
         if parent is not None:
-            pw = max(560, int(parent.width() * 2 / 3))
-            ph = max(440, int(parent.height() * 2 / 3))
+            pw = max(720, int(parent.width() * 0.78))
+            ph = max(520, int(parent.height() * 0.82))
         else:
-            pw, ph = 560, 440
+            pw, ph = 720, 520
         panel.setFixedSize(pw, ph)
 
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(20, 14, 20, 18)
-        lay.setSpacing(14)
+        lay.setSpacing(12)
 
         # ---- 标题栏：可拖拽 ----
         title_bar = QFrame(panel)
@@ -77,13 +116,80 @@ class SettingsDialog(OverlayDialog):
         header.addStretch(1)
         lay.addWidget(title_bar)
 
-        # 设置项区域放在滚动区内：高缩放/小屏时面板固定高度装不下
-        # 全部行，滚动代替裁切（标题栏与完成按钮始终固定可见）
-        body_host = QWidget()
-        body_host.setStyleSheet("background: transparent;")
-        body = QVBoxLayout(body_host)
+        # ---- 分类 tab：标题下方靠左横向排布 ----
+        tab_row = QHBoxLayout()
+        tab_row.setContentsMargins(4, 0, 4, 0)
+        tab_row.setSpacing(8)
+        self._tab_buttons: list = []
+        for index, title in enumerate(_TAB_TITLES):
+            btn = themed_tab_button(title)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(32)
+            btn.clicked.connect(lambda _, i=index: self._switch_tab(i))
+            tab_row.addWidget(btn)
+            self._tab_buttons.append(btn)
+        tab_row.addStretch(1)
+        lay.addLayout(tab_row)
+
+        # ---- 内容区：两页叠放，靠动画切隐 ----
+        self._pages_host = _PagesHost(panel)
+        lay.addWidget(self._pages_host, stretch=1)
+
+        self._appearance_scroll = self._build_appearance_page()
+        self._features_scroll = self._build_features_page()
+        self._pages_host.add_page(self._appearance_scroll)
+        self._pages_host.add_page(self._features_scroll)
+
+        # ---- 底部按钮 ----
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        self._done_btn = QPushButton("完成")
+        self._done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._done_btn.clicked.connect(self._save_and_accept)
+        btn_row.addWidget(self._done_btn)
+        lay.addLayout(btn_row)
+
+        # 全部内联样式集中一处：构造与主题切换（retheme）共用
+        self._apply_styles()
+        self._on_tray_toggled(self._tray_toggle.isChecked())
+        self._apply_voice_fab_state(self._has_speaker)
+        self._apply_speaker_state(self._has_speaker)
+        self._apply_autostart_state(self._autostart_supported)
+        self._sync_tab_style()
+        self._show_tab(_TAB_APPEARANCE, animated=False)
+
+    # ---------- 页面构建 ----------
+
+    def _make_item(self, title: str, desc: str):
+        """设置项卡片外壳：返回 (卡片, 标题, 描述, 行布局)，控件由调用方塞入行。"""
+        item = QFrame()
+        row = QHBoxLayout(item)
+        row.setContentsMargins(14, 12, 14, 12)
+        row.setSpacing(12)
+        texts = QVBoxLayout()
+        texts.setContentsMargins(0, 0, 0, 0)
+        texts.setSpacing(4)
+        texts.addStretch(1)
+        label = QLabel(title)
+        texts.addWidget(label)
+        desc_label = QLabel(desc)
+        desc_label.setWordWrap(True)
+        desc_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        texts.addWidget(desc_label)
+        texts.addStretch(1)
+        row.addLayout(texts, stretch=1)
+        return item, label, desc_label, row
+
+    def _build_scroll(self, items: list[QFrame]) -> QScrollArea:
+        """一组设置项卡片装进滚动区：项数增多/高缩放时滚动代替裁切。"""
+        host = QWidget()
+        host.setStyleSheet("background: transparent;")
+        body = QVBoxLayout(host)
         body.setContentsMargins(8, 6, 8, 0)
         body.setSpacing(8)
+        for item in items:
+            body.addWidget(item)
+        body.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
@@ -93,80 +199,65 @@ class SettingsDialog(OverlayDialog):
             "QScrollBar::handle:vertical { background: #35363f; border-radius: 3px; min-height: 30px; }"
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,"
             "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { height: 0; background: none; }")
-        scroll.setWidget(body_host)
-        lay.addWidget(scroll, stretch=1)
+        scroll.setWidget(host)
+        return scroll
 
+    def _build_appearance_page(self) -> QScrollArea:
+        """主题界面：主题配色、界面缩放比例、小爱悬浮对话按钮。"""
         # ── 主题配色下拉（跟随系统 / 浅色 / 深色） ──
-        self._theme_item = QFrame()
-        theme_lay = QHBoxLayout(self._theme_item)
-        theme_lay.setContentsMargins(14, 12, 14, 12)
-        theme_lay.setSpacing(12)
-        theme_texts = QVBoxLayout()
-        theme_texts.setContentsMargins(0, 0, 0, 0)
-        theme_texts.setSpacing(4)
-        theme_texts.addStretch(1)
-        self._theme_label = QLabel("主题配色")
-        theme_texts.addWidget(self._theme_label)
-        self._theme_desc = QLabel("切换界面明暗配色；「跟随系统」随 Windows 深浅色模式自动变化")
-        self._theme_desc.setWordWrap(True)
-        self._theme_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        theme_texts.addWidget(self._theme_desc)
-        theme_texts.addStretch(1)
-        theme_lay.addLayout(theme_texts, stretch=1)
+        self._theme_item, self._theme_label, self._theme_desc, theme_row = self._make_item(
+            "主题配色",
+            "切换界面明暗配色；「跟随系统」随 Windows 深浅色模式自动变化")
         self._original_mode = settings_store.get_theme_mode()
         self._pending_mode = self._original_mode
         self._theme_combo = themed_combo(
             [_THEME_MODE_LABELS[m] for m in ("system", "light", "dark")],
             current=_THEME_MODE_LABELS[self._pending_mode])
         self._theme_combo.currentTextChanged.connect(self._on_theme_selected)
-        theme_lay.addWidget(self._theme_combo)
-        body.addWidget(self._theme_item)
+        theme_row.addWidget(self._theme_combo)
 
         # ── 界面缩放比例（高 DPI 屏幕微调；更改后重启生效） ──
-        self._scale_item = QFrame()
-        scale_lay = QHBoxLayout(self._scale_item)
-        scale_lay.setContentsMargins(14, 12, 14, 12)
-        scale_lay.setSpacing(12)
-        scale_texts = QVBoxLayout()
-        scale_texts.setContentsMargins(0, 0, 0, 0)
-        scale_texts.setSpacing(4)
-        self._scale_label = QLabel("界面缩放比例")
-        scale_texts.addWidget(self._scale_label)
-        self._scale_desc = QLabel(
+        self._scale_item, self._scale_label, self._scale_desc, scale_row = self._make_item(
+            "界面缩放比例",
             "调整界面整体元素大小（在系统缩放之上叠加），适用于高 DPI 屏幕使用"
-            "较高系统缩放时觉得界面偏大的情况；更改后需重启应用生效")
-        self._scale_desc.setWordWrap(True)
-        self._scale_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        scale_texts.addWidget(self._scale_desc)
-        scale_lay.addLayout(scale_texts, stretch=1)
+            "较高系统缩放时觉得界面偏大的情况；可从下拉选档位或直接键入任意"
+            "百分比，更改后需重启应用生效")
         self._original_ui_scale = settings_store.get_ui_scale()
         self._pending_ui_scale = self._original_ui_scale
-        scale_labels = {f"{s:g}": f"{round(s * 100):d}%" for s in settings_store.UI_SCALES}
-        scale_key = min(scale_labels, key=lambda k: abs(float(k) - self._pending_ui_scale))
-        self._scale_combo = themed_combo(
-            [scale_labels[k] for k in sorted(scale_labels, key=float)],
-            current=scale_labels[scale_key])
-        self._scale_combo.currentTextChanged.connect(self._on_scale_selected)
-        scale_lay.addWidget(self._scale_combo)
-        body.addWidget(self._scale_item)
+        # 可编辑下拉：预设档位 + 直接键入任意百分比（无级调整，50-200）
+        scale_labels = [f"{round(s * 100):d}%" for s in sorted(settings_store.UI_SCALES)]
+        # 用 :g 保留小数（重启后回显 137.5% 而非 round 取整的 138%）
+        current_pct = f"{self._pending_ui_scale * 100:g}%"
+        self._scale_combo = themed_combo(scale_labels, current=current_pct, editable=True)
+        # 输入校验：不设 validator——任何 validator 都会在校验中间态时
+        # 干扰增量输入（QDoubleValidator 范围校验拒绝"1"、"12"这类中间值，
+        # 正是「打字没反应」的根因）。输入完全自由，非法值在提交时
+        # _on_scale_edited 用 float() 解析并回显兜底。
+        # 聚焦自动全选已由 themed_combo 内部 _SelectAllLineEdit 处理。
+        # 回车/失焦提交解析；选档位用 activated（仅用户从弹出列表点选时
+        # 触发，不会因输入过程中 currentText 变化而误触发覆盖输入）
+        self._scale_combo.lineEdit().returnPressed.connect(self._on_scale_edited)
+        self._scale_combo.lineEdit().editingFinished.connect(self._on_scale_edited)
+        self._scale_combo.activated.connect(self._on_scale_selected)
+        scale_row.addWidget(self._scale_combo)
 
+        # ── 小爱同学悬浮对话按钮 ──
+        self._has_speaker = any(is_speaker(d) and d.online for d in self._devices)
+        self._fab_item, self._fab_label, self._fab_desc, fab_row = self._make_item(
+            "小爱同学悬浮对话按钮",
+            "启用位于主界面右下角的小爱同学对话悬浮按钮（需设备里有小爱音箱）")
+        self._voice_fab_toggle = themed_switch()
+        self._voice_fab_toggle.setChecked(settings_store.get_voice_fab_enabled())
+        _sync_switch(self._voice_fab_toggle)
+        fab_row.addWidget(self._voice_fab_toggle)
+
+        return self._build_scroll([self._theme_item, self._scale_item, self._fab_item])
+
+    def _build_features_page(self) -> QScrollArea:
+        """应用功能：开机自启动、默认指挥的音箱、系统托盘、托盘方式启动、隐藏无功能设备。"""
         # ── 开机自启动（写注册表 HKCU Run，默认关闭） ──
-        self._autostart_item = QFrame()
-        autostart_lay = QHBoxLayout(self._autostart_item)
-        autostart_lay.setContentsMargins(14, 12, 14, 12)
-        autostart_lay.setSpacing(12)
-        autostart_texts = QVBoxLayout()
-        autostart_texts.setContentsMargins(0, 0, 0, 0)
-        autostart_texts.setSpacing(4)
-        autostart_texts.addStretch(1)
-        self._autostart_label = QLabel("开机自启动")
-        autostart_texts.addWidget(self._autostart_label)
-        self._autostart_desc = QLabel("开启后，Windows 登录时自动启动米家（可与「以系统托盘方式启动」搭配静默运行）")
-        self._autostart_desc.setWordWrap(True)
-        self._autostart_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        autostart_texts.addWidget(self._autostart_desc)
-        autostart_texts.addStretch(1)
-        autostart_lay.addLayout(autostart_texts, stretch=1)
+        self._autostart_item, self._autostart_label, self._autostart_desc, autostart_row = \
+            self._make_item("开机自启动", "")
         self._autostart_toggle = themed_switch()
         # 自启动仅构建版支持：开发模式置灰并提示，保存时清理残留注册项
         self._autostart_supported = settings_store.autostart_supported()
@@ -180,96 +271,12 @@ class SettingsDialog(OverlayDialog):
                 "保存设置时将清除残留的自启动注册项")
         _sync_switch(self._autostart_toggle)
         self._autostart_toggle.setEnabled(self._autostart_supported)
-        autostart_lay.addWidget(self._autostart_toggle)
-        body.addWidget(self._autostart_item)
-
-        # ── 启用带快捷操作面板的系统托盘 ──
-        self._tray_item = QFrame()
-        tray_lay = QHBoxLayout(self._tray_item)
-        tray_lay.setContentsMargins(14, 12, 14, 12)
-        tray_lay.setSpacing(12)
-        tray_texts = QVBoxLayout()
-        tray_texts.setContentsMargins(0, 0, 0, 0)
-        tray_texts.setSpacing(4)
-        tray_texts.addStretch(1)
-        self._tray_label = QLabel("启用带快捷操作面板的系统托盘")
-        tray_texts.addWidget(self._tray_label)
-        self._tray_desc = QLabel("开启后，关闭主窗口时将最小化到系统托盘并启用托盘快捷操作面板")
-        self._tray_desc.setWordWrap(True)
-        self._tray_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        tray_texts.addWidget(self._tray_desc)
-        tray_texts.addStretch(1)
-        tray_lay.addLayout(tray_texts, stretch=1)
-        self._tray_toggle = themed_switch()
-        self._tray_toggle.setChecked(settings_store.get_minimize_to_tray())
-        _sync_switch(self._tray_toggle)
-        tray_lay.addWidget(self._tray_toggle)
-        body.addWidget(self._tray_item)
-
-        # ── 以系统托盘方式启动（子设置，依赖父开关） ──
-        self._start_min_item = QFrame()
-        start_min_lay = QHBoxLayout(self._start_min_item)
-        start_min_lay.setContentsMargins(14, 12, 14, 12)
-        start_min_lay.setSpacing(12)
-        start_min_texts = QVBoxLayout()
-        start_min_texts.setContentsMargins(0, 0, 0, 0)
-        start_min_texts.setSpacing(4)
-        start_min_texts.addStretch(1)
-        self._start_min_label = QLabel("以系统托盘方式启动")
-        start_min_texts.addWidget(self._start_min_label)
-        self._start_min_desc = QLabel("开启后，启动软件时将以系统托盘的方式静默启动，不唤出主界面（该功能需开启系统托盘功能可选）")
-        self._start_min_desc.setWordWrap(True)
-        self._start_min_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        start_min_texts.addWidget(self._start_min_desc)
-        start_min_texts.addStretch(1)
-        start_min_lay.addLayout(start_min_texts, stretch=1)
-        self._start_min_toggle = themed_switch()
-        self._start_min_toggle.setChecked(settings_store.get_start_minimized())
-        _sync_switch(self._start_min_toggle)
-        start_min_lay.addWidget(self._start_min_toggle)
-        body.addWidget(self._start_min_item)
-
-        # ── 开启小爱同学悬浮对话按钮 ──
-        self._has_speaker = any(is_speaker(d) and d.online for d in self._devices)
-        self._fab_item = QFrame()
-        fab_lay = QHBoxLayout(self._fab_item)
-        fab_lay.setContentsMargins(14, 12, 14, 12)
-        fab_lay.setSpacing(12)
-        fab_texts = QVBoxLayout()
-        fab_texts.setContentsMargins(0, 0, 0, 0)
-        fab_texts.setSpacing(4)
-        fab_texts.addStretch(1)
-        self._fab_label = QLabel("开启小爱同学悬浮对话按钮")
-        fab_texts.addWidget(self._fab_label)
-        self._fab_desc = QLabel("启用位于主界面右下角的小爱同学对话悬浮按钮（需设备里有小爱音箱）")
-        self._fab_desc.setWordWrap(True)
-        self._fab_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        fab_texts.addWidget(self._fab_desc)
-        fab_texts.addStretch(1)
-        fab_lay.addLayout(fab_texts, stretch=1)
-        self._voice_fab_toggle = themed_switch()
-        self._voice_fab_toggle.setChecked(settings_store.get_voice_fab_enabled())
-        _sync_switch(self._voice_fab_toggle)
-        fab_lay.addWidget(self._voice_fab_toggle)
-        body.addWidget(self._fab_item)
+        autostart_row.addWidget(self._autostart_toggle)
 
         # ── 默认输出音箱（小爱指令发往哪台音箱） ──
-        self._speaker_item = QFrame()
-        speaker_lay = QHBoxLayout(self._speaker_item)
-        speaker_lay.setContentsMargins(14, 12, 14, 12)
-        speaker_lay.setSpacing(12)
-        speaker_texts = QVBoxLayout()
-        speaker_texts.setContentsMargins(0, 0, 0, 0)
-        speaker_texts.setSpacing(4)
-        speaker_texts.addStretch(1)
-        self._speaker_label = QLabel("默认输出音箱")
-        speaker_texts.addWidget(self._speaker_label)
-        self._speaker_desc = QLabel("小爱语音指令默认发往的音箱；选择「自动」时使用设备列表中第一个在线音箱")
-        self._speaker_desc.setWordWrap(True)
-        self._speaker_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        speaker_texts.addWidget(self._speaker_desc)
-        speaker_texts.addStretch(1)
-        speaker_lay.addLayout(speaker_texts, stretch=1)
+        self._speaker_item, self._speaker_label, self._speaker_desc, speaker_row = self._make_item(
+            "默认指挥的音箱",
+            "小爱语音指令默认发往的音箱；选择「自动」时使用设备列表中第一个在线音箱")
         # 全部音箱（含离线，离线时运行中自动回退）；在线优先排序
         speakers = sorted(
             (d for d in self._devices if is_speaker(d)),
@@ -285,97 +292,140 @@ class SettingsDialog(OverlayDialog):
         )
         self._speaker_combo = themed_combo(
             [label for _, label in self._speaker_options], current=cur_label)
-        # 音箱名含房间号较长，覆盖 themed_combo 的窄宽默认值
-        self._speaker_combo.setFixedWidth(200)
-        speaker_lay.addWidget(self._speaker_combo)
-        body.addWidget(self._speaker_item)
+        # 音箱名含房间号可能较长：按最长选项文本自适应宽度
+        # （字体度量 + 箭头/内边距余量），避免选项被裁切
+        fm = self._speaker_combo.fontMetrics()
+        option_labels = [label for _, label in self._speaker_options]
+        text_w = max((fm.horizontalAdvance(t) for t in option_labels), default=120)
+        self._speaker_combo.setFixedWidth(min(max(text_w + 48, 150), 300))
+        speaker_row.addWidget(self._speaker_combo)
+
+        # ── 带快捷操作面板的系统托盘 ──
+        self._tray_item, self._tray_label, self._tray_desc, tray_row = self._make_item(
+            "带快捷操作面板的系统托盘",
+            "开启后，关闭主窗口时将最小化到系统托盘并启用托盘快捷操作面板")
+        self._tray_toggle = themed_switch()
+        self._tray_toggle.setChecked(settings_store.get_minimize_to_tray())
+        _sync_switch(self._tray_toggle)
+        tray_row.addWidget(self._tray_toggle)
+        self._tray_toggle.toggled.connect(self._on_tray_toggled)
+
+        # ── 以系统托盘方式启动（子设置，依赖父开关） ──
+        self._start_min_item, self._start_min_label, self._start_min_desc, start_min_row = \
+            self._make_item(
+                "以系统托盘方式启动",
+                "开启后，启动软件时将以系统托盘的方式静默启动，不唤出主界面（该功能需开启系统托盘功能可选）")
+        self._start_min_toggle = themed_switch()
+        self._start_min_toggle.setChecked(settings_store.get_start_minimized())
+        _sync_switch(self._start_min_toggle)
+        start_min_row.addWidget(self._start_min_toggle)
 
         # ── 隐藏无可控制功能的设备 ──
-        self._hide_item = QFrame()
-        hide_lay = QHBoxLayout(self._hide_item)
-        hide_lay.setContentsMargins(14, 12, 14, 12)
-        hide_lay.setSpacing(12)
-        hide_texts = QVBoxLayout()
-        hide_texts.setContentsMargins(0, 0, 0, 0)
-        hide_texts.setSpacing(4)
-        hide_texts.addStretch(1)
-        self._hide_label = QLabel("隐藏无可控制功能的设备")
-        hide_texts.addWidget(self._hide_label)
-        self._hide_desc = QLabel("无公开功能规格或规格无属性的设备（如部分蓝牙类产品）将不在主页显示")
-        self._hide_desc.setWordWrap(True)
-        self._hide_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        hide_texts.addWidget(self._hide_desc)
-        hide_texts.addStretch(1)
-        hide_lay.addLayout(hide_texts, stretch=1)
+        self._hide_item, self._hide_label, self._hide_desc, hide_row = self._make_item(
+            "隐藏无可控制功能的设备",
+            "无公开功能规格或规格无属性的设备（如部分蓝牙类产品）将不在主页显示")
         self._hide_toggle = themed_switch()
         self._hide_toggle.setChecked(settings_store.get_hide_no_func_devices())
         _sync_switch(self._hide_toggle)
-        hide_lay.addWidget(self._hide_toggle)
-        body.addWidget(self._hide_item)
+        hide_row.addWidget(self._hide_toggle)
 
-        # ── 显示场景选项卡 ──
-        self._scene_tab_item = QFrame()
-        scene_tab_lay = QHBoxLayout(self._scene_tab_item)
-        scene_tab_lay.setContentsMargins(14, 12, 14, 12)
-        scene_tab_lay.setSpacing(12)
-        scene_tab_texts = QVBoxLayout()
-        scene_tab_texts.setContentsMargins(0, 0, 0, 0)
-        scene_tab_texts.setSpacing(4)
-        self._scene_tab_label = QLabel("显示场景选项卡")
-        scene_tab_texts.addWidget(self._scene_tab_label)
-        self._scene_tab_desc = QLabel("开启后，主页选项卡最左侧显示「场景」入口，可查看并执行手动控制场景")
-        self._scene_tab_desc.setWordWrap(True)
-        self._scene_tab_desc.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        scene_tab_texts.addWidget(self._scene_tab_desc)
-        scene_tab_lay.addLayout(scene_tab_texts, stretch=1)
+        # ── 显示场景选项卡（release-0.1.0 并入：主页「场景」入口显隐） ──
+        self._scene_tab_item, self._scene_tab_label, self._scene_tab_desc, scene_tab_row = \
+            self._make_item(
+                "显示场景选项卡",
+                "开启后，主页选项卡最左侧显示「场景」入口，可查看并执行手动控制场景")
         self._scene_tab_toggle = themed_switch()
         self._scene_tab_toggle.setChecked(settings_store.get_show_scene_tab())
         _sync_switch(self._scene_tab_toggle)
-        scene_tab_lay.addWidget(self._scene_tab_toggle)
-        body.addWidget(self._scene_tab_item)
+        scene_tab_row.addWidget(self._scene_tab_toggle)
 
-        body.addStretch(1)
+        # ── 自动检测新版本 ──
+        self._update_item, self._update_label, self._update_desc, update_row = self._make_item(
+            "自动检测新版本",
+            "开启时，会在每次启动应用时自动从 Github 仓库获取新版本信息，"
+            "有则提示更新")
+        self._update_toggle = themed_switch()
+        self._update_toggle.setChecked(settings_store.get_check_update_enabled())
+        _sync_switch(self._update_toggle)
+        update_row.addWidget(self._update_toggle)
 
-        # ---- 底部按钮 ----
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
-        self._done_btn = QPushButton("完成")
-        self._done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._done_btn.clicked.connect(self._save_and_accept)
-        btn_row.addWidget(self._done_btn)
-        lay.addLayout(btn_row)
+        return self._build_scroll([
+            self._autostart_item, self._speaker_item, self._tray_item,
+            self._start_min_item, self._hide_item, self._scene_tab_item,
+            self._update_item,
+        ])
 
-        # 全部内联样式集中一处：构造与主题切换（retheme）共用
-        self._apply_styles()
-        self._tray_toggle.toggled.connect(self._on_tray_toggled)
-        self._on_tray_toggled(self._tray_toggle.isChecked())
-        self._apply_voice_fab_state(self._has_speaker)
-        self._apply_speaker_state(self._has_speaker)
-        self._apply_autostart_state(self._autostart_supported)
+    # ---------- 分类切换 ----------
+
+    def _sync_tab_style(self) -> None:
+        for index, btn in enumerate(self._tab_buttons):
+            # siui 切换按钮的选中观感由 checked 状态自绘驱动
+            if btn.isChecked() != (index == self._current_tab):
+                btn.setChecked(index == self._current_tab)
+
+    def _switch_tab(self, index: int) -> None:
+        same = (index == self._current_tab)
+        self._current_tab = index
+        # 先纠正 checked：SiToggleButtonRefactor 可点击取消选中，
+        # 反复点同一 tab 会让高亮丢失，这里无条件重新同步
+        self._sync_tab_style()
+        if same:
+            return
+        self._show_tab(index, animated=True)
+
+    def _show_tab(self, index: int, animated: bool) -> None:
+        """切页：直接替换后新页整体淡入（与主页房间切换同款观感）。"""
+        pages = (self._appearance_scroll, self._features_scroll)
+        pages[1 - index].hide()
+        incoming = pages[index]
+        # 清掉可能残留的旧效果，避免快速连续切换时叠在新一轮动画上
+        incoming.setGraphicsEffect(None)
+        incoming.show()
+        if not animated:
+            return
+        effect = QGraphicsOpacityEffect(incoming)
+        effect.setOpacity(0.0)
+        incoming.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim.setDuration(_FADE_MS)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+
+        def _cleanup() -> None:
+            # 快速连续切换时旧动画的 finished 会迟到，只清理仍属
+            # 自己的效果，避免误删新一轮动画的透明度效果
+            if incoming.graphicsEffect() is effect:
+                incoming.setGraphicsEffect(None)
+
+        anim.finished.connect(_cleanup)
+        anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+
+    # ---------- 样式 ----------
 
     def _apply_styles(self) -> None:
         """主题相关内联样式：构造与 retheme 共用。"""
         panel_card = f"QFrame {{ background: {SiColors.CARD}; border-radius: 10px; }}"
-        for item in (self._tray_item, self._start_min_item,
-                     self._fab_item, self._theme_item, self._autostart_item,
-                     self._hide_item, self._scale_item,
-                     self._scene_tab_item, self._speaker_item):
+        for item in (self._tray_item, self._start_min_item, self._fab_item,
+                     self._theme_item, self._autostart_item, self._speaker_item,
+                     self._hide_item, self._scale_item, self._scene_tab_item,
+                     self._update_item):
             item.setStyleSheet(panel_card)
-            # 全部设置项等高：滚动区内布局按 sizeHint 分配，固定高度
-            # 保证文字不被压缩裁切、视觉整齐
-            item.setFixedHeight(64)
+            # 高度按内容自适应（不固定）：长描述换行后行自然变高，
+            # 不会被固定 64px 裁掉；短描述保持紧凑。QScrollArea 负责
+            # 项数多/高缩放时的整体滚动。
+            item.setMinimumHeight(0)
         self._title_label.setStyleSheet(
             f"color: {SiColors.TEXT_PRIMARY}; background: transparent;")
-        for label in (self._tray_label, self._start_min_label,
-                      self._fab_label, self._theme_label, self._autostart_label,
-                      self._hide_label, self._scale_label,
-                      self._scene_tab_label, self._speaker_label):
+        for label in (self._tray_label, self._start_min_label, self._fab_label,
+                      self._theme_label, self._autostart_label, self._speaker_label,
+                      self._hide_label, self._scale_label, self._scene_tab_label,
+                      self._update_label):
             label.setStyleSheet(
                 f"color: {SiColors.TEXT_PRIMARY}; background: transparent; font-size: 10pt;")
-        for desc in (self._tray_desc, self._start_min_desc,
-                     self._fab_desc, self._theme_desc, self._autostart_desc,
-                     self._hide_desc, self._scale_desc,
-                     self._scene_tab_desc, self._speaker_desc):
+        for desc in (self._tray_desc, self._start_min_desc, self._fab_desc,
+                     self._theme_desc, self._autostart_desc, self._speaker_desc,
+                     self._hide_desc, self._scale_desc, self._scene_tab_desc,
+                     self._update_desc):
             desc.setStyleSheet(
                 f"color: {SiColors.TEXT_SECONDARY}; background: transparent; font-size: 7pt;")
         self._done_btn.setStyleSheet(
@@ -385,8 +435,19 @@ class SettingsDialog(OverlayDialog):
         apply_combo_qss(self._theme_combo)
         self._theme_combo.set_arrow_color(SiColors.TEXT_SECONDARY)
         # 界面缩放下拉同样随主题刷新（遗漏曾致切主题后仍保持旧深色样式）
-        apply_combo_qss(self._scale_combo)
+        apply_combo_qss(self._scale_combo, editable=True)
         self._scale_combo.set_arrow_color(SiColors.TEXT_SECONDARY)
+        # 分类 tab 颜色随主题刷新（style_data 是构造期求值的内联色）
+        for btn in self._tab_buttons:
+            from PySide6.QtGui import QColor
+            btn.style_data.button_color = QColor("#00" + SiColors.CARD[1:])
+            btn.style_data.text_color = QColor(SiColors.TEXT_SECONDARY)
+            btn.style_data.toggled_button_color = QColor(SiColors.THEME)
+            btn.style_data.toggled_text_color = QColor(SiColors.ON_THEME_TEXT)
+            btn.style_data.hover_color = QColor("#1a" + SiColors.THEME[1:])
+            btn.style_data.idle_color = QColor("#00" + SiColors.THEME[1:])
+            btn.style_data.click_color = QColor("#40" + SiColors.THEME[1:])
+            btn.reloadStyleData()
 
     def _apply_autostart_state(self, supported: bool) -> None:
         """开发模式下灰置自启动行（开关透明度 + 文字变灰）。"""
@@ -423,12 +484,53 @@ class SettingsDialog(OverlayDialog):
         if hasattr(win, "apply_theme_mode"):
             win.apply_theme_mode(mode)
 
-    def _on_scale_selected(self, text: str) -> None:
-        """缩放仅落盘：Qt 的缩放因子须在应用启动前设置，重启后生效。"""
+    def _on_scale_selected(self, index: int) -> None:
+        """用户从下拉点选预设档位（activated 信号）：更新值并回显。"""
+        combo = self._scale_combo
+        if index < 0 or index >= combo.count():
+            return
+        text = combo.itemText(index)
         try:
-            self._pending_ui_scale = float(text.replace("%", "")) / 100.0
+            value = float(text.strip().rstrip("%")) / 100.0
         except ValueError:
             return
+        self._pending_ui_scale = value
+        # blockSignals：避免 setCurrentText 再触发信号递归
+        combo.blockSignals(True)
+        combo.setCurrentText(self._scale_pct_text(value))
+        combo.blockSignals(False)
+
+    def _scale_pct_text(self, value: float) -> str:
+        """缩放值(小数) → 百分比显示文本，保留小数但去尾零（137.5→137.5%, 1.0→100%）。"""
+        return f"{value * 100:g}%"
+
+    def _on_scale_edited(self) -> None:
+        """键入完成后规范化显示：非法值回显、超范围钳制。"""
+        combo = self._scale_combo
+        raw = combo.currentText().strip().rstrip("%")
+        if not raw:
+            return
+        try:
+            value = float(raw) / 100.0
+        except ValueError:
+            # 非法输入回显当前值
+            combo.blockSignals(True)
+            combo.setCurrentText(self._scale_pct_text(self._pending_ui_scale))
+            combo.blockSignals(False)
+            return
+        # 钳制到允许范围（设置页 50%-200%；超出按边界）
+        low, high = settings_store._UI_SCALE_MIN, settings_store._UI_SCALE_MAX
+        value = min(max(value, low), high)
+        # 值未变（如回显规范化）直接返回，避免 setCurrentText 递归
+        if abs(value - self._pending_ui_scale) < 1e-9 and \
+                combo.currentText() == self._scale_pct_text(value):
+            return
+        self._pending_ui_scale = value
+        # 回显规范化文本；blockSignals 避免 setCurrentText 再触发
+        # _on_scale_selected 用舍入值覆盖刚保存的精确值（如 137.5→138）
+        combo.blockSignals(True)
+        combo.setCurrentText(self._scale_pct_text(value))
+        combo.blockSignals(False)
 
     def _save_and_accept(self) -> None:
         settings_store.set_minimize_to_tray(self._tray_toggle.isChecked())
@@ -441,14 +543,18 @@ class SettingsDialog(OverlayDialog):
         idx = self._speaker_combo.currentIndex()
         if 0 <= idx < len(self._speaker_options):
             settings_store.set_default_speaker_did(self._speaker_options[idx][0])
-        # 语音悬浮球仅在带设备上下文时落盘：设备列表为空（如启动早期
+        # 语音浮浮球仅在带设备上下文时落盘：设备列表为空（如启动早期
         # 打开设置）时 has_speaker 恒 False 会强制取消勾选，若照常
         # 落盘会把用户已开启的设置静默抹成关闭
         if self._devices:
             settings_store.set_voice_fab_enabled(self._voice_fab_toggle.isChecked())
         settings_store.set_hide_no_func_devices(self._hide_toggle.isChecked())
         settings_store.set_show_scene_tab(self._scene_tab_toggle.isChecked())
+        settings_store.set_check_update_enabled(self._update_toggle.isChecked())
         settings_store.set_theme_mode(self._pending_mode)
+        # 界面缩放：记录是否变化，供保存后提示重启
+        old_scale = self._original_ui_scale
+        self._scale_changed = abs(self._pending_ui_scale - old_scale) >= 1e-6
         settings_store.set_ui_scale(self._pending_ui_scale)
         # 开机自启动写注册表：失败不阻断其余设置保存。
         # 开发模式开关已置灰为关，此处顺带清掉历史残留的无效注册项
@@ -543,7 +649,7 @@ class SettingsDialog(OverlayDialog):
         y = (self.height() - ph) // 2
         self._panel.move(x, y)
 
-    # ---- 拖拽 ----
+    # ---------- 拖拽 ----------
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         self._header_drag_pos = None
