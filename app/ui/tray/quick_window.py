@@ -260,7 +260,11 @@ class TrayQuickWindow(QDialog):
     def set_devices(self, devices: list[DeviceInfo], known_power: dict[str, bool | None]) -> None:
         """由主窗口在设备列表刷新后调用，传入全量设备与开关记忆。"""
         self._devices = list(devices)
-        self._known_power = dict(known_power)
+        # 合并而不是整体替换：主窗口只轮询它当前可见（+挂件）的设备，
+        # 托盘里排在别的房间的设备由本窗口自己 refresh_power 探测。
+        # 整体替换会让那部分结论丢掉——轮询一推新列表，托盘行的开关
+        # 按钮就随着 known_power 被抹成 None 而消失。
+        self._known_power.update(known_power)
         self._tray_dids = tray_store.load()
         self._tray_scenes = tray_store.load_scenes()
         self._tray_order = tray_store.load_order()
@@ -504,6 +508,7 @@ class TrayQuickWindow(QDialog):
         grid = getattr(self, "_grid", None)
         if grid is None:
             return
+        gained = False
         for did, st in states.items():
             for i in range(grid.count()):
                 w = grid.itemAt(i).widget()
@@ -511,7 +516,15 @@ class TrayQuickWindow(QDialog):
                     btn = getattr(w, "_power_btn", None)
                     if btn is not None:
                         btn.set_state(st)
+                    elif st is not None:
+                        # 这一行是在"开关能力未知"时建的，没有按钮；
+                        # 探测刚拿到结论，重建一次把快捷开关补出来，
+                        # 否则要等下一次呼出托盘才看得到按钮
+                        gained = True
                     break
+        # 只在窗口可见时重建：隐藏态下次呼出本来就会重建
+        if gained and self.isVisible():
+            self._rebuild()
 
     def _rebuild(self) -> None:
         self._destroy_grid()
