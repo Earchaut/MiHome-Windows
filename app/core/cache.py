@@ -20,6 +20,12 @@ from app.core.models import DeviceInfo
 #
 # 版本 2：DeviceInfo 增加 spec_type 字段（上游 5.x 起按规格 URN 拉 spec）；
 # 旧版缓存缺该字段会让"隐藏无功能设备"误判，直接作废重新拉取
+#
+# 注意：**不要为了"作废一次开关记忆"顺手把版本号 +1**。版本号是缓存
+# 格式的全局协议，上游以后若因格式变更把版本提到同一个数字，两边语义
+# 不同却互相认可，本该作废的数据反而被留下来。开关记忆里的 None
+# （确认无开关能力）因此干脆不落盘：每台设备每次启动重判一次的代价
+# 只是查一次已缓存的规格文件，不值得用版本号去换，也就不会和上游撞号。
 _CACHE_VERSION = 3
 _FILENAME = "devices_cache.json"
 
@@ -27,9 +33,11 @@ _FILENAME = "devices_cache.json"
 def load() -> tuple[list[DeviceInfo], dict[str, bool | None], dict[str, str]] | None:
     """返回 (设备列表, 开关记忆, 温湿度记忆)；无效一律返回 None。
 
-    开关记忆沿用主窗口语义：True/False 为上次已知状态，None 表示
-    已确认无开关能力。温湿度为 did->展示文案（如 28.0°C 60%）。
-    结构不匹配直接丢弃，避免脏数据进 UI。
+    开关记忆只恢复 True/False（上次已知状态）。None 表示"确认无开关
+    能力"，**不落盘也不恢复**（理由见文件头），旧缓存里的 None 条目
+    一律忽略，下次启动重新探测——不会再把这类设备钉死在"无能力"上。
+    温湿度为 did->展示文案（如 28.0°C 60%）。结构不匹配直接丢弃，
+    避免脏数据进 UI。
     """
     path = _json_store.data_file(_FILENAME)
     try:
@@ -49,7 +57,10 @@ def load() -> tuple[list[DeviceInfo], dict[str, bool | None], dict[str, str]] | 
     known: dict[str, bool | None] = {}
     if isinstance(known_raw, dict):
         for key, value in known_raw.items():
-            if value in (True, False, None):
+            # 只认布尔值：None（确认无能力）与脏数据都丢掉，交给启动后
+            # 的探测重新判定。能力是设备的静态属性，误信一次 None 却会
+            # 让开关按钮永久消失（见文件头说明）
+            if isinstance(value, bool):
                 known[str(key)] = value
     metrics_raw = raw.get("metrics")
     metrics: dict[str, str] = {}
@@ -71,10 +82,16 @@ def save(
         for key, value in metrics.items():
             if isinstance(value, str) and value:
                 clean_metrics[str(key)] = value
+    # 开关记忆同理只存有结论的条目：None 是"确认无开关能力"，不落盘
+    clean_known: dict[str, bool] = {}
+    if isinstance(known_power, dict):
+        for key, value in known_power.items():
+            if isinstance(value, bool):
+                clean_known[str(key)] = value
     data = {
         "version": _CACHE_VERSION,
         "devices": [vars(device) for device in devices],
-        "known_power": known_power,
+        "known_power": clean_known,
         "metrics": clean_metrics,
     }
     # 写失败不影响主流程，下次刷新会再次尝试

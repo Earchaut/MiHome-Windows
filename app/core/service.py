@@ -536,17 +536,25 @@ class MijiaService:
         target_of: dict[str, str] = {}
         for did in dids:
             info = spec_map.get(did)
+            entry = self._device_index.get(did, ("", "", ""))
+            spec_type = entry[1] if len(entry) > 1 else ""
+            if info is None and spec_type:
+                # 规格没取到 ≠ 设备没有开关能力：网络抖动、官方源临时失败
+                # 都会走到这里。若按 None 记进 result，界面会把它当成
+                # "确认无开关能力"写进缓存并永久跳过轮询，按钮再也不出现
+                # （恢复网络、升级依赖都没用）。这里直接跳过，下一轮探测
+                # 会重新尝试；同 spec_type 的失败已进 _spec_cache，本会话
+                # 重试不会再打网络。
+                continue
             method = self._find_on_method(info, did) if info else None
             if method is None:
-                # spec 缺失或无开关属性，直接记为无能力。
-                # 这是常态（温度计、门磁、摄像头），按 debug 记：
-                # 按 WARNING 会在 debug.log 里造出一堆假故障
+                # 确认没有可写 on 属性（温度计、门磁、摄像头）。
+                # 这是常态，按 debug 记：按 WARNING 会在 debug.log 里
+                # 造出一堆假故障
                 result[did] = None
-                entry = self._device_index.get(did, ("", "", ""))
                 self._log_switch_failure(
                     did, None, None,
-                    "规格无 on 属性或规格未取到（spec_type=%r）"
-                    % (entry[1] if len(entry) > 1 else ""),
+                    "规格无 on 属性（spec_type=%r）" % spec_type,
                     level=logging.DEBUG)
                 continue
             method_of[did] = method
